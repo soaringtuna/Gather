@@ -44,6 +44,7 @@ const COLUMNS = [
   "checkpointCount",
   "expectationsManaged",
   "expectationGroup",
+  "curriculumCitation",
 ];
 
 function cell(value) {
@@ -94,6 +95,7 @@ export function stateToCsv(state) {
       weeklyTarget: course.weeklyTarget || "",
       weekStart: course.weekStart || "",
       expectationsManaged: course.expectationsManaged ? "1" : "",
+      curriculumCitation: course.curriculumCitation || "",
     }));
     for (const student of course.students || []) {
       lines.push(row({
@@ -259,6 +261,7 @@ export function stateFromCsv(text) {
       course.weeklyTarget = Number(value(record, "weeklyTarget")) || 0;
       course.weekStart = value(record, "weekStart");
       course.expectationsManaged = value(record, "expectationsManaged") === "1";
+      course.curriculumCitation = value(record, "curriculumCitation");
     } else if (type === "student") {
       course.students.push({
         id: value(record, "studentId"),

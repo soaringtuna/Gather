@@ -1,7 +1,7 @@
-import { classCsvName, courseToCsv, stateFromCsv } from "./csv.js?v=8";
+import { classCsvName, courseToCsv, stateFromCsv } from "./csv.js?v=9";
 import { beginDriveFolder, beginGoogleSignIn, canListDrive, createDriveFolder, listFolders, storedGoogleToken, takeGoogleResult, takePickedFolder, uploadToFolder } from "./drive.js?v=14";
 import { expectationsForCode, findOntarioCourse, searchOntarioCourses } from "./ontario.js?v=18";
-import { emptyState, loadState, normalizeCourse, normalizeState, saveState } from "./store.js?v=5";
+import { emptyState, loadState, normalizeCourse, normalizeState, saveState } from "./store.js?v=6";
 import {
   KINDS,
   LEVELS,
@@ -91,11 +91,7 @@ function confirmAction(message, confirmLabel = "Delete") {
 
 function persist() {
   saveState(db);
-  if (autoSyncEnabled()) scheduleDriveSync();
-}
-
-function autoSyncEnabled() {
-  return localStorage.getItem("class-record-google-autosync") === "1";
+  scheduleDriveSync();
 }
 
 let driveSyncTimer = 0;
@@ -104,9 +100,9 @@ let driveSyncQueued = false;
 function lastSyncText() {
   const stored = localStorage.getItem("class-record-google-synced-at");
   const time = stored ? new Date(stored) : null;
-  if (!time || Number.isNaN(time.getTime())) return "Last Sync: Not Yet";
+  if (!time || Number.isNaN(time.getTime())) return "Autosaved: Not Yet";
   const formatted = time.toLocaleString("en-CA", { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-  return `Last Sync: ${formatted}`;
+  return `Autosaved: ${formatted}`;
 }
 
 function noteDriveSync() {
@@ -123,7 +119,6 @@ function scheduleDriveSync() {
 }
 
 async function autoDriveSync({ prompt = false } = {}) {
-  if (!autoSyncEnabled()) return;
   if (driveBackup.running) {
     driveSyncQueued = true;
     return;
@@ -156,7 +151,7 @@ async function autoDriveSync({ prompt = false } = {}) {
     showToast(error.message || "The backup could not be saved.");
   } finally {
     driveBackup.running = false;
-    if (driveSyncQueued && autoSyncEnabled()) {
+    if (driveSyncQueued) {
       driveSyncQueued = false;
       scheduleDriveSync();
     } else {
@@ -178,7 +173,7 @@ function alertAction(message) {
 
 function warnIfGoogleMissing() {
   if (googleAccountReady()) return;
-  alertAction("This data is saved on this device. Sign in under Google Drive Setup so a copy can be stored in Google Drive.");
+  alertAction("This data is saved on this device. Sign in under GOOGLE DRIVE SETUP so a copy can be stored in Google Drive.");
 }
 
 function scrollToGoogleSetup() {
@@ -264,7 +259,8 @@ function expectationMenu(course, selectedId) {
   const learningSkills = items.some((item) => String(item.id).startsWith("ls-"));
   const others = items.some((item) => !String(item.id).startsWith("ls-"));
   const growing = "Growing Success: Assessment, Evaluation, and Reporting in Ontario Schools, 2010";
-  const citation = learningSkills && others && curriculum.citation ? `${curriculum.citation}. ${growing}` : learningSkills ? growing : curriculum.citation;
+  const official = course.curriculumCitation || curriculum.citation;
+  const citation = learningSkills && others && official ? `${official}. ${growing}` : learningSkills ? growing : official;
   return { citation, html };
 }
 
@@ -407,13 +403,84 @@ function applyLearningSkills(course, mode, existing) {
 }
 
 function applyCatalogueExpectations(course, options = {}) {
-  const curriculum = expectationsForCode(course.code, options);
+  const curriculum = options.curriculum || expectationsForCode(course.code, options);
   if (!curriculum.items.length) return false;
   const incoming = curriculum.items.map(expectationRecord);
   const current = Array.isArray(options.existing) ? options.existing : visibleExpectations(course);
   course.expectations = options.mode === "add" ? appendExpectations(current, incoming) : incoming;
+  if (curriculum.citation) {
+    const citation = curriculum.citation.replace(/\s+/g, " ").trim();
+    if (options.mode === "add" && course.curriculumCitation && !course.curriculumCitation.includes(citation)) course.curriculumCitation = `${course.curriculumCitation}. ${citation}`;
+    else if (options.mode !== "add" || !course.curriculumCitation) course.curriculumCitation = citation;
+  }
   finishExpectationEdit(course);
   return true;
+}
+
+function curriculumLines(payload, includeSpecific) {
+  return (payload.items || []).filter((item) => includeSpecific || !item.specific).map((item) => ({
+    id: item.id,
+    label: item.label,
+    detail: item.detail || item.label,
+    group: includeSpecific ? (item.group || item.strand || "") : (item.strand || ""),
+  }));
+}
+
+function showCurriculumProgress() {
+  let closedByApp = false;
+  let cancelled = false;
+  modalEl.innerHTML = `<form method="dialog"><h2>Load Expectations</h2><p id="curriculum-progress-label">Finding the curriculum document</p><progress id="curriculum-progress" class="curriculum-progress" max="100" value="8"></progress><menu class="stack-menu"><button class="ghost" value="cancel" type="submit">Cancel</button></menu></form>`;
+  const label = document.getElementById("curriculum-progress-label");
+  const bar = document.getElementById("curriculum-progress");
+  let value = 8;
+  const timer = setInterval(() => {
+    if (value < 90) value += value < 36 ? 5 : 1;
+    if (bar) bar.value = value;
+    if (label && value > 30) label.textContent = "Reading the curriculum document";
+  }, 250);
+  modalEl.showModal();
+  const cancelButton = modalEl.querySelector("button[value='cancel']");
+  cancelButton?.addEventListener("click", () => { cancelled = true; });
+  return {
+    get cancelled() { return cancelled; },
+    finish() {
+      closedByApp = true;
+      clearInterval(timer);
+      if (bar) bar.value = 100;
+      if (modalEl.open) modalEl.close();
+    },
+    whenClosed: new Promise((resolve) => {
+      modalEl.addEventListener("close", () => {
+        clearInterval(timer);
+        if (!closedByApp) cancelled = true;
+        resolve(cancelled);
+      }, { once: true });
+    }),
+  };
+}
+
+async function fetchCurriculumDocument(code, signal) {
+  let response;
+  try {
+    response = await fetch(`/api/curriculum?code=${encodeURIComponent(code)}`, { signal });
+  } catch (error) {
+    if (error?.name === "AbortError") throw error;
+    const failure = new Error("The curriculum document could not be reached.");
+    failure.offline = true;
+    throw failure;
+  }
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+  if (!response.ok || !payload?.items?.length) {
+    const failure = new Error(payload?.error || `No expectations were found in the curriculum document for ${code}.`);
+    failure.offline = !response.ok && response.status >= 500;
+    throw failure;
+  }
+  return payload;
 }
 
 function parseRoute() {
@@ -432,6 +499,15 @@ function parseRoute() {
 
 function hrefFor(courseId, page = "class") {
   return `#/c/${encodeURIComponent(courseId)}/${page}`;
+}
+
+let keptTab = "class";
+
+function tabName(route = parseRoute()) {
+  if (route.name === "student") return "roster";
+  if (route.name === "capture") return "class";
+  if (["class", "roster", "setup", "guide"].includes(route.name)) return route.name;
+  return "";
 }
 
 function studentHref(courseId, studentId) {
@@ -478,6 +554,8 @@ function customExpectationFields({ text, saveCustom, textId, checkId }) {
 
 function render() {
   const route = parseRoute();
+  const tab = tabName(route);
+  if (tab) keptTab = tab;
   if (route.courseId && db.lastCourseId !== route.courseId) {
     db.lastCourseId = route.courseId;
     persist();
@@ -563,7 +641,7 @@ function fitSeatTiles() {
 }
 
 function brandBanner() {
-  return `<div class="brand-banner"><img src="img/gathered-logo.jpg?v=3" alt="GATHERED. Let's get it together." /></div>`;
+  return `<div class="brand-banner"><img src="img/gathered-logo.jpg?v=4" alt="GATHERED. Let's get it together." /></div>`;
 }
 
 function classSwitcher(course) {
@@ -578,10 +656,10 @@ function shell(route, course, body) {
   const capturing = route.name === "capture";
   const tabs = course && !capturing
     ? `<nav class="tabs" aria-label="Course">
-        ${tab(course, "class", "New Entry", route)}
-        ${tab(course, "roster", "Summary", route)}
-        ${tab(course, "setup", "Setup", route)}
-        ${tab(course, "guide", "Guide", route)}
+        ${tab(course, "class", "NEW ENTRY", route)}
+        ${tab(course, "roster", "SUMMARY", route)}
+        ${tab(course, "setup", "SETUP", route)}
+        ${tab(course, "guide", "GUIDE", route)}
       </nav>`
     : "";
   const heading = course ? esc(course.code ? `${course.code} ${course.name}` : course.name) : route.name === "new" ? "New Class" : "Classes";
@@ -604,7 +682,8 @@ function shell(route, course, body) {
 
 function tab(course, page, label, route) {
   const on = route.name === page || (page === "roster" && route.name === "student") || (page === "class" && route.name === "capture");
-  return `<a href="${hrefFor(course.id, page)}" ${on ? `aria-current="page"` : ""}>${label}</a>`;
+  const mark = page === "class" ? ` class="tab-entry"` : "";
+  return `<a href="${hrefFor(course.id, page)}"${mark} ${on ? `aria-current="page"` : ""}>${label}</a>`;
 }
 
 function renderHome() {
@@ -1325,10 +1404,11 @@ function renderSetup(course) {
   return `<div class="stack">
     <div class="stack noprint setup-actions">
       <a class="primary setup-add" href="#/new">Create New Class</a>
-      <button type="button" class="ghost drive-sync" data-action="drive-backup">${driveIcon()} Sync to Google Drive</button>
+      <button type="button" class="ghost drive-sync" data-action="drive-backup">${driveIcon()} Manual Save to Google Drive</button>
       <p class="sub sync-time" id="last-sync">${esc(lastSyncText())}</p>
     </div>
     <form class="card form-grid" data-action="save-course">
+      <h2 class="span-2">COURSE DETAILS</h2>
       ${courseCodeFields(course.code)}
       <label class="field">Course Title<input name="name" type="text" value="${esc(course.name)}" required /></label>
       <label class="field">Grade<select name="grade">${gradeOptions(codeGrade)}</select></label>
@@ -1349,7 +1429,7 @@ function renderSetup(course) {
       <button type="button" class="primary" data-action="save-expectation-list">Save Expectation List</button>
     </section>
     <section class="card stack">
-      <h2>Students</h2>
+      <h2>STUDENT LIST (<span class="course-code-mark">${esc(course.code)}</span>)</h2>
       <textarea id="student-list" aria-label="Students, One Name Per Line" rows="${Math.max(8, sortedStudents(course).length + 1)}" spellcheck="false">${esc(studentLines)}</textarea>
       <button type="button" class="primary" data-action="save-student-list">Save Student List</button>
       <p class="sub">One student per line. Change a name, add a line, or delete a line, then press Save Student List.</p>
@@ -1358,19 +1438,19 @@ function renderSetup(course) {
       <button type="button" class="danger full-button" data-action="delete-course">Delete ${esc(course.code || course.name)}</button>
     </section>
     <section class="card stack" id="google-panel">
-      <h2 class="google-setup-title">${driveIcon()} Google Drive Setup</h2>
+      <h2 class="google-setup-title">${driveIcon()} GOOGLE DRIVE SETUP</h2>
       <label class="field">Active Google Account<input id="google-account-email" type="text" readonly value="${esc(googleEmail(sessionStorage.getItem("class-record-google-account")))}" placeholder="Log in to Google Account Below" /></label>
       <label class="field">Google Folder<input id="google-folder-name" type="text" readonly value="${esc(storedFolder()?.name || "")}" placeholder="No Folder Chosen" /></label>
       <div class="row">
         <button type="button" class="ghost drive-mark" data-action="google-sign-in">${driveIcon()} <span id="google-sign-in-label">${googleAccountReady() ? "Connected" : "Sign In"}</span></button>
         <button type="button" class="primary" data-action="select-drive-folder">Select Drive Folder</button>
       </div>
-      <label class="field check"><span><input id="google-auto-sync" type="checkbox" ${autoSyncEnabled() ? "checked" : ""}/> Sync On Every Change</span></label>
       <div id="drive-browser"></div>
     </section>
     <div class="stack">
-      <button type="button" class="ghost full-button" data-action="import">Import CSV</button>
-      <button type="button" class="ghost full-button" data-action="email-backup">Backup CSV</button>
+      <h2>BACKUP / RESTORE CLASS DATA</h2>
+      <button type="button" class="ghost full-button" data-action="import">Restore Class from CSV File</button>
+      <button type="button" class="ghost full-button" data-action="email-backup">Backup Class to CSV File</button>
     </div>
   </div>`;
 }
@@ -1422,10 +1502,10 @@ function renderGuide() {
     <details class="card guide-drop">
       <summary>Expectations</summary>
       <ul>
-        <li>Press Load Expectations From Curriculum. If specific expectations are stored, choose overall expectations or overall and specific expectations. Then choose to replace the current list, or add these expectations to it.</li>
+        <li>Press Load Expectations From Curriculum. The app reads the ministry curriculum document for that course code. If the document includes specific expectations, choose overall expectations or overall and specific expectations. Then choose to replace the current list, or add these expectations to it.</li>
         <li>Press Load Learning Skills. Choose to replace the current expectations, or to add the six learning skills to the existing list.</li>
-        <li>If that course has no list here, type your own, one per line, then press Save Expectation List.</li>
-        <li>Lines are short topic labels. New Entry names the document under Active Curriculum Document.</li>
+        <li>If that course code is not in the ministry document, type your own, one per line, then press Save Expectation List.</li>
+        <li>Each line is one expectation. New Entry names the document under Active Curriculum Document.</li>
         <li>Choose Create Custom Expectation to write one for an entry. Leave Add This Custom Expectation To The List on to keep it for the class.</li>
       </ul>
     </details>
@@ -1433,8 +1513,8 @@ function renderGuide() {
       <summary>Google Drive</summary>
       <ul>
         <li>At the bottom of Setup, press Sign In, then Select Drive Folder, then Use This Folder.</li>
-        <li>Sync to Google Drive saves one CSV per class into that folder. The line under the button is the last successful sync.</li>
-        <li>Turn on Sync On Every Change to save again after each change.</li>
+        <li>Manual Save to Google Drive saves one CSV per class into that folder. The Autosaved line under the button is the last successful sync.</li>
+        <li>Every saved change is sent to that folder automatically.</li>
         <li>Each file is named with the course code, the semester and year, and the period.</li>
         <li>If you add data before signing in, the app reminds you the copy is only on this device.</li>
       </ul>
@@ -1442,8 +1522,8 @@ function renderGuide() {
     <details class="card guide-drop">
       <summary>Backup</summary>
       <ul>
-        <li>Backup CSV downloads one file per class, then opens your mail app. Attach the files.</li>
-        <li>Import CSV updates the classes in the file. Other classes on this device stay.</li>
+        <li>Backup Class to CSV File downloads one file per class, then opens your mail app. Attach the files.</li>
+        <li>Restore Class from CSV File updates the classes in the file. Other classes on this device stay.</li>
         <li>The working copy stays in this browser. This is not a board system or a Ministry application.</li>
       </ul>
     </details>
@@ -1834,14 +1914,51 @@ async function onClick(event) {
       showToast("Choose an Ontario course code first.");
       return;
     }
-    const preview = expectationsForCode(code);
-    if (!preview.items.length) {
+    const existing = visibleExpectations(course);
+    const progress = showCurriculumProgress();
+    const controller = new AbortController();
+    progress.whenClosed.then((cancelled) => { if (cancelled) controller.abort(); });
+    let payload = null;
+    try {
+      payload = await fetchCurriculumDocument(code, controller.signal);
+    } catch (error) {
+      if (progress.cancelled || error?.name === "AbortError") {
+        progress.finish();
+        loadingExpectations = false;
+        return;
+      }
+      const local = expectationsForCode(code, { includeSpecific: true });
+      progress.finish();
+      if (error.offline && local.items.length) {
+        payload = {
+          citation: local.citation,
+          hasSpecific: local.hasSpecific,
+          items: local.items.map((item) => ({
+            ...item,
+            strand: item.group || "",
+            specific: /\d+\.\d+/.test(item.label.split(" ")[0]),
+          })),
+        };
+        showToast("The curriculum site did not respond. The list saved in the app was used.");
+      } else {
+        loadingExpectations = false;
+        showToast(error.message || `No expectations were found in the curriculum document for ${code}.`);
+        return;
+      }
+    }
+    if (progress.cancelled) {
+      progress.finish();
       loadingExpectations = false;
-      showToast(`No curriculum list is stored for ${code} yet. Add expectations in the list below.`);
       return;
     }
-    const existing = visibleExpectations(course);
-    const choice = preview.hasSpecific ? await chooseExpectationDepth(true) : "overall";
+    progress.finish();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (!payload?.items?.length) {
+      loadingExpectations = false;
+      showToast(`No expectations were found in the curriculum document for ${code}.`);
+      return;
+    }
+    const choice = payload.hasSpecific ? await chooseExpectationDepth(true) : "overall";
     if (!choice) {
       loadingExpectations = false;
       return;
@@ -1851,15 +1968,19 @@ async function onClick(event) {
       loadingExpectations = false;
       return;
     }
+    const curriculum = {
+      citation: payload.citation || "",
+      items: curriculumLines(payload, choice === "specific"),
+    };
     course.code = code;
     const catalogue = findOntarioCourse(course.code);
     if (catalogue) {
       course.gradeLabel = catalogue.gradeLabel;
       if (!course.name || course.name === "Untitled course") course.name = catalogue.title;
     }
-    if (!applyCatalogueExpectations(course, { includeSpecific: choice === "specific", mode, existing })) {
+    if (!applyCatalogueExpectations(course, { mode, existing, curriculum })) {
       loadingExpectations = false;
-      showToast(`No curriculum list is stored for ${code} yet. Add expectations in the list below.`);
+      showToast(`No expectations were found in the curriculum document for ${code}.`);
       return;
     }
     persist();
@@ -1965,7 +2086,7 @@ async function onClick(event) {
     db.courses = db.courses.filter((item) => item.id !== course.id);
     db.lastCourseId = db.courses[0]?.id || null;
     persist();
-    location.hash = db.lastCourseId ? hrefFor(db.lastCourseId) : "#/";
+    location.hash = db.lastCourseId ? hrefFor(db.lastCourseId, keptTab) : "#/";
     showToast("Course deleted.");
     return;
   }
@@ -2094,7 +2215,7 @@ function onSubmit(event) {
     db.courses.push(created);
     db.lastCourseId = created.id;
     persist();
-    location.hash = hrefFor(created.id);
+    location.hash = hrefFor(created.id, keptTab);
     ui.draftCode = "";
     ui.codeQuery = "";
     showToast("Class created.");
@@ -2245,11 +2366,6 @@ function onChange(event) {
   const target = event.target;
   const route = parseRoute();
   const course = courseById(route.courseId);
-  if (target.id === "google-auto-sync") {
-    localStorage.setItem("class-record-google-autosync", target.checked ? "1" : "");
-    if (target.checked) autoDriveSync({ prompt: true });
-    return;
-  }
   if (target.id === "entry-photo" && ui.capture) {
     const file = target.files?.[0];
     target.value = "";
@@ -2268,8 +2384,7 @@ function onChange(event) {
   if (target.id === "class-switch") {
     const nextId = target.value;
     if (!nextId || nextId === route.courseId) return;
-    const page = ["roster", "setup", "guide"].includes(route.name) ? route.name : "class";
-    location.hash = hrefFor(nextId, page);
+    location.hash = hrefFor(nextId, tabName(route) || keptTab);
     return;
   }
   if (target.id === "focus-expectation" && course) {
@@ -2483,7 +2598,7 @@ async function onImport(event) {
     db = normalizeState({ ...db, courses: order.map((id) => merged.get(id)) });
     if (!db.backupEmail) db.backupEmail = email;
     persist();
-    location.hash = db.lastCourseId ? hrefFor(db.lastCourseId) : "#/";
+    location.hash = db.lastCourseId ? hrefFor(db.lastCourseId, keptTab) : "#/";
     showToast("Backup imported.");
     render();
   } catch {
@@ -2580,13 +2695,6 @@ function start() {
   if (!location.hash) location.hash = db.lastCourseId ? hrefFor(db.lastCourseId) : "#/";
   else render();
   resumeGoogle();
-}
-
-function openClassPage() {
-  const route = parseRoute();
-  const courseId = route.courseId || db.lastCourseId;
-  if (courseId) location.hash = hrefFor(courseId, "class");
-  if (modalEl.open) modalEl.close();
 }
 
 async function resumeGoogle() {

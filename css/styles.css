@@ -124,6 +124,7 @@ a { color: var(--green-2); }
 h1, h2, h3 { font-weight: 700; letter-spacing: -0.03em; margin: 0; }
 h1 { font-size: clamp(1.7rem, 2.4vw, 2.1rem); line-height: 1.1; }
 h2 { font-size: 1.05rem; }
+.course-code-mark { color: var(--level-0); }
 .student-name { margin-top: 6px; font-size: clamp(2rem, 3.4vw, 2.75rem); line-height: 1.05; }
 .student-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
 .student-head .student-name { flex: 1 0 100%; }
@@ -136,6 +137,9 @@ h2 { font-size: 1.05rem; }
 .tabs a { text-decoration: none; color: var(--ink-soft); padding: 8px 12px; border-radius: 8px; font-weight: 600; }
 .tabs a:hover { background: var(--paper-2); }
 .tabs a[aria-current="page"] { background: var(--ink); color: white; }
+.tabs a.tab-entry { color: #213faf; }
+.tabs a.tab-entry[aria-current="page"],
+.tabs a.tab-entry[aria-current="page"]:hover { background: #213faf; color: white; }
 .stack { display: flex; flex-direction: column; gap: 12px; }
 .expect-lead p { margin: 0; }
 .card, .panel, .tile, .entry {
@@ -547,6 +551,10 @@ input[type="range"]::-moz-range-thumb { height: 28px; width: 28px; border-radius
 #modal menu { display: flex; justify-content: flex-end; gap: 8px; margin: 0; padding: 0; }
 #modal menu.stack-menu { flex-direction: column; align-items: stretch; }
 #modal menu.stack-menu button { width: 100%; }
+.curriculum-progress { width: 100%; height: 12px; border: 0; border-radius: 99px; overflow: hidden; background: #e3e5ea; }
+.curriculum-progress::-webkit-progress-bar { background: #e3e5ea; border-radius: 99px; }
+.curriculum-progress::-webkit-progress-value { background: #121417; border-radius: 99px; }
+.curriculum-progress::-moz-progress-bar { background: #121417; border-radius: 99px; }
 #modal::backdrop { background: rgba(18, 20, 23, 0.4); }
 .picker, .picker * { box-sizing: content-box !important; }
 .picker-dialog-bg { z-index: 100000 !important; pointer-events: none !important; }

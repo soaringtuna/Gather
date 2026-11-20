@@ -77,6 +77,7 @@ export function normalizeCourse(raw) {
     students,
     expectations,
     expectationsManaged: Boolean(raw?.expectationsManaged),
+    curriculumCitation: String(raw?.curriculumCitation || "").trim().slice(0, 400),
     sessions: Array.isArray(raw?.sessions) ? raw.sessions : [],
     entries: (Array.isArray(raw?.entries) ? raw.entries : []).map(normalizeEntry).filter(Boolean),
     marks: raw?.marks && typeof raw.marks === "object" ? raw.marks : {},
