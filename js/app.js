@@ -657,24 +657,33 @@ function shell(route, course, body) {
   const tabs = course && !capturing
     ? `<nav class="tabs" aria-label="Course">
         ${tab(course, "class", "NEW ENTRY", route)}
-        ${tab(course, "roster", "SUMMARY", route)}
-        ${tab(course, "setup", "SETUP", route)}
-        ${tab(course, "guide", "GUIDE", route)}
+        <div class="tab-row">
+          ${tab(course, "roster", "SUMMARY", route)}
+          ${tab(course, "setup", "SETUP", route)}
+          ${tab(course, "guide", "GUIDE", route)}
+        </div>
       </nav>`
     : "";
-  const heading = course ? esc(course.code ? `${course.code} ${course.name}` : course.name) : route.name === "new" ? "New Class" : "Classes";
-  const lede = course
+  const heading = course ? "" : route.name === "new" ? "New Class" : "Classes";
+  const courseLede = course
     ? `${esc(course.semesterLabel || "Semester Not Set")} · Grade ${course.grade}${course.period ? ` · Period ${esc(course.period)}` : ""}`
+    : "";
+  const lede = course
+    ? ""
     : route.name === "new"
       ? "Pick the Ontario course code. Expectations for that code load into the class."
       : "Choose the active class above. Several classes can stay on this device.";
+  const title = heading ? `<div class="course-heading"><h1>${heading}</h1><p class="lede">${lede}</p></div>` : "";
   return `<div class="shell ${capturing ? "is-capture" : ""}">
     ${brandBanner()}
     <header class="appbar">
-      ${classSwitcher(course)}
+      <div class="class-panel">
+        ${classSwitcher(course)}
+        ${courseLede ? `<p class="lede course-lede">${courseLede}</p>` : ""}
+      </div>
     </header>
     <div class="main">
-      ${capturing ? "" : `<div class="topbar"><div class="course-heading"><h1>${heading}</h1><p class="lede">${lede}</p></div>${tabs}</div>`}
+      ${capturing ? "" : `<div class="topbar">${title}${tabs}</div>`}
       <div id="main" tabindex="-1">${body}</div>
     </div>
   </div>`;
