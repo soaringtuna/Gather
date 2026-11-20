@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en-CA">
+  <head>
+    <meta charset="utf-8" />
+    <title>Class Record</title>
+  </head>
+  <body>
+    <p>Returning to Class Record.</p>
+    <script>
+      sessionStorage.setItem("class-record-google-picker", "cancel");
+      const back = sessionStorage.getItem("class-record-google-return") || "/";
+      sessionStorage.removeItem("class-record-google-return");
+      location.replace(back);
+    </script>
+  </body>
+</html>

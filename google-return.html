@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en-CA">
+  <head>
+    <meta charset="utf-8" />
+    <title>Class Record</title>
+  </head>
+  <body>
+    <p>Returning to Class Record.</p>
+    <script>
+      const hash = new URLSearchParams(location.hash.slice(1));
+      const query = new URLSearchParams(location.search);
+      const token = hash.get("access_token");
+      const error = hash.get("error") || query.get("error");
+      if (token) {
+        sessionStorage.setItem("class-record-google-access", JSON.stringify({
+          token,
+          scope: hash.get("scope") || "",
+          expires: Date.now() + (Number(hash.get("expires_in")) || 3600) * 1000,
+        }));
+      }
+      const idToken = hash.get("id_token");
+      if (idToken) sessionStorage.setItem("class-record-google-id", idToken);
+      if (error) sessionStorage.setItem("class-record-google-error", error);
+      const back = sessionStorage.getItem("class-record-google-return") || "/";
+      sessionStorage.removeItem("class-record-google-return");
+      location.replace(back);
+    </script>
+  </body>
+</html>
