@@ -8,6 +8,7 @@ its catalogue directly, so Load Expectations calls /api/curriculum here.
 import html
 import io
 import json
+import os
 import re
 import threading
 import warnings
@@ -22,7 +23,7 @@ API = "https://ws.api.dcp.edu.gov.on.ca/content/api"
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/125.0 Safari/537.36"
 CODE_RE = re.compile(r"^[A-Z]{3}[1-4][A-Z0-9]$")
 EXP_SPLIT = re.compile(r"(?<![A-Za-z0-9.])([A-Z]\d{1,2}(?:\.\d{1,2})?)\.?\s+(?=[a-z])")
-PORT = 8765
+PORT = int(os.environ.get("PORT", "8765"))
 
 _lock = threading.Lock()
 _documents = {}
