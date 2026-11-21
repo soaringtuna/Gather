@@ -669,7 +669,7 @@ function shell(route, course, body) {
   const lede = course
     ? ""
     : route.name === "new"
-      ? "Pick the Ontario course code. Expectations for that code load into the class."
+      ? "Search the Ontario course code (or first letters), then choose the course from the drop down. Expectations will come from that chosen Curriculum."
       : db.courses.length
         ? "Choose the active class above. Several classes can stay on this device."
         : "";
@@ -712,12 +712,8 @@ function courseCodeFields(selected) {
   const list = options
     .map((item) => `<option value="${esc(item.code)}" ${item.code === selected ? "selected" : ""}>${esc(item.code)} — ${esc(item.title)}</option>`)
     .join("");
-  const hint = current
-    ? ""
-    : "Type a code or a course name. This searches every ministry secondary course as of June 2025.";
   return `<label class="field span-2">Search For Courses<input id="code-search" type="search" value="${esc(ui.codeQuery)}" placeholder="Enter Course Code or Keyword" autocomplete="off" /></label>
-    <label class="field span-2">Select A Course Curriculum<select id="course-code" name="code"><option value="">Choose A Course</option>${list}</select></label>
-    ${hint ? `<p class="sub span-2">${esc(hint)}</p>` : ""}`;
+    <label class="field span-2">Select A Course Curriculum<select id="course-code" name="code"><option value="">Choose A Course</option>${list}</select></label>`;
 }
 
 function periodValue(value) {
@@ -752,8 +748,7 @@ function renderNewCourse() {
     <label class="field">Grade<select name="grade">${gradeOptions(catalogue?.grade ?? 10)}</select></label>
     <label class="field">Semester<input name="semester" type="text" value="Semester 1, 2026–27" /></label>
     ${periodField("")}
-    <label class="field span-2">Students, One Per Line<textarea name="students" placeholder="Amira Khalil"></textarea></label>
-    <p class="sub span-2">The expectation menu uses the overall expectations from the curriculum document still in effect for that course code.</p>
+    <label class="field span-2">Students, One Per Line<textarea name="students" placeholder="Add your Students (or do this later...)"></textarea></label>
     <div class="span-2"><button class="primary" type="submit">Create Class</button></div>
   </form>`;
 }
@@ -2431,9 +2426,6 @@ function onChange(event) {
         if (name) name.value = catalogue.title;
       }
     }
-    const hint = form?.querySelector(".sub.span-2");
-    if (catalogue) hint?.remove();
-    else if (hint) hint.textContent = "Type a code or a course name. This searches every ministry secondary course as of June 2025.";
     return;
   }
   if (target.id === "class-date") {
