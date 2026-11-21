@@ -874,7 +874,7 @@ function renderClass(course) {
       <h2>WEEKLY DATA GOAL</h2>
       <div class="row week-row">
         <label class="field">Week Of<input id="week-start" type="date" value="${esc(weekStart)}" /></label>
-        <label class="field week-goal">Weekly Goal<select id="weekly-target">${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((count) => `<option value="${count}" ${count === target ? "selected" : ""}>${count}</option>`).join("")}</select></label>
+        <label class="field week-goal">Weekly Goal<input id="weekly-target" type="range" min="0" max="10" step="1" value="${target}" /><output id="weekly-target-value" for="weekly-target">${target}</output></label>
       </div>
       <p class="week-note">Week Of is the first day of the week being counted, and that week includes the next six days. Choose how many entries each student should have in that week. 0 leaves the tiles light grey. A chosen goal turns a tile yellow until the student reaches it, then green.</p>
     </section>
@@ -2542,6 +2542,11 @@ function onInput(event) {
   if (target.id === "percent-slider") {
     const readout = document.getElementById("percent-readout");
     if (readout) readout.textContent = `${Math.round(Number(target.value))}%`;
+    return;
+  }
+  if (target.id === "weekly-target") {
+    const readout = document.getElementById("weekly-target-value");
+    if (readout) readout.textContent = String(Math.round(Number(target.value)));
     return;
   }
   if (target.id === "code-search") {

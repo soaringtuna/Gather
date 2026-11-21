@@ -190,8 +190,11 @@ h2 { font-size: 1.05rem; }
 .week-row { justify-content: flex-start; width: 100%; }
 .week-row .field { flex-direction: row; align-items: center; gap: 8px; white-space: nowrap; }
 .week-row .field:first-child { flex: 1 1 100%; }
-.week-row .field.week-goal { flex: 0 0 auto; flex-direction: row; align-items: center; gap: 8px; white-space: nowrap; }
-.week-row .field.week-goal select { width: 5.5rem; }
+.week-row .field.week-goal { flex: 1 1 100%; width: 100%; flex-direction: row; align-items: center; gap: 8px; white-space: nowrap; }
+.week-goal input[type="range"] { width: auto; flex: 1 1 auto; min-width: 0; height: 22px; }
+.week-goal input[type="range"]::-webkit-slider-thumb { height: 16px; width: 16px; margin-top: -5px; }
+.week-goal input[type="range"]::-moz-range-thumb { height: 16px; width: 16px; }
+.week-goal output { min-width: 1.25rem; font-variant-numeric: tabular-nums; }
 .week-row input[type="date"] { flex: 1 1 auto; width: auto; min-width: 10rem; }
 .split { justify-content: space-between; align-items: flex-end; }
 label.field { display: flex; flex-direction: column; gap: 6px; font-weight: 650; }
