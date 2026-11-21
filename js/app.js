@@ -173,7 +173,7 @@ function alertAction(message) {
 
 function warnIfGoogleMissing() {
   if (googleAccountReady()) return;
-  alertAction("This data is saved on this device. Sign in under GOOGLE DRIVE SETUP so a copy can be stored in Google Drive.");
+  alertAction("You are not signed into Google Drive. All data is only temporarily saved in the App. Before you exit Backup Class to CSV (Setup). Classes can be re-added using the Import Class from CSV File.");
 }
 
 function scrollToGoogleSetup() {
@@ -491,7 +491,7 @@ function parseRoute() {
     const page = parts[2] || "class";
     if (page === "capture" && parts[3]) return { name: "capture", courseId, studentId: parts[3], entryId: parts[4] || null };
     if (page === "s" && parts[3]) return { name: "student", courseId, studentId: parts[3] };
-    if (["class", "roster", "setup", "guide"].includes(page)) return { name: page, courseId };
+    if (["class", "roster", "setup"].includes(page)) return { name: page, courseId };
     return { name: "class", courseId };
   }
   return { name: "home" };
@@ -506,7 +506,7 @@ let keptTab = "class";
 function tabName(route = parseRoute()) {
   if (route.name === "student") return "roster";
   if (route.name === "capture") return "class";
-  if (["class", "roster", "setup", "guide"].includes(route.name)) return route.name;
+  if (["class", "roster", "setup"].includes(route.name)) return route.name;
   return "";
 }
 
@@ -601,7 +601,6 @@ function paint(route, course) {
   else if (route.name === "class") body = renderClass(course);
   else if (route.name === "roster") body = renderRoster(course);
   else if (route.name === "setup") body = renderSetup(course);
-  else if (route.name === "guide") body = renderGuide();
   else if (route.name === "capture") {
     const student = studentById(course, route.studentId);
     body = student && ui.capture
@@ -658,9 +657,8 @@ function shell(route, course, body) {
     ? `<nav class="tabs" aria-label="Course">
         ${tab(course, "class", "NEW ENTRY", route)}
         <div class="tab-row">
-          ${tab(course, "roster", "SUMMARY", route)}
+          ${tab(course, "roster", "EVIDENCE", route)}
           ${tab(course, "setup", "SETUP", route)}
-          ${tab(course, "guide", "GUIDE", route)}
         </div>
       </nav>`
     : "";
@@ -1459,85 +1457,10 @@ function renderSetup(course) {
     </section>
     <div class="stack">
       <h2>BACKUP / RESTORE CLASS DATA</h2>
-      <button type="button" class="ghost full-button" data-action="import">Restore Class from CSV File</button>
-      <button type="button" class="ghost full-button" data-action="email-backup">Backup Class to CSV File</button>
+      <button type="button" class="ghost full-button csv-action" data-action="import">Import Class from CSV File</button>
+      <button type="button" class="ghost full-button csv-action" data-action="email-backup">Backup Class to CSV File</button>
     </div>
   </div>`;
-}
-
-function renderGuide() {
-  return `<article class="prose stack">
-    <details class="card guide-drop">
-      <summary>New Entry</summary>
-      <ul>
-        <li>Choose the class at the top. Set the date. A class topic is optional.</li>
-        <li>Choose an expectation, then tap a student. LIST VIEW replaces the tiles with a menu of student names. TILE VIEW brings the tiles back.</li>
-        <li>Observation is on the left and starts selected. Conversation is on the right. The kind you save stays selected.</li>
-        <li>Choose a level, then press Save Entry. A level tap does not save by itself.</li>
-        <li>Add Note and Add Photo are optional.</li>
-        <li>Tiles show initials. Drag a tile to move that student. Cols and Rows set the grid. Empty seats stay empty.</li>
-        <li>The left number is entries this week. The right number is the total.</li>
-        <li>Set Week Of and Weekly Goal from 0 to 10. The week is that date plus the next six days. 0 leaves tiles light grey. A goal turns a tile yellow until it is met, then green.</li>
-        <li>Level 4 is 80–100%, Level 3 is 70–79%, Level 2 is 60–69%, Level 1 is 50–59%, and below Level 1 is under 50%. A level button records the midpoint. Attendance is not tracked.</li>
-      </ul>
-    </details>
-    <details class="card guide-drop">
-      <summary>Summary</summary>
-      <ul>
-        <li>Each row shows how many entries sit at each level, and the percents you recorded, oldest to newest.</li>
-        <li>Use Find A Student to filter the list. Open a name for that student’s page.</li>
-        <li>Export PDF Report prints one student. The report includes a graph of level over time. In the print window, choose Save as PDF. The file name is the student, the course code, and the date.</li>
-        <li>Export All Reports prints one page per student. The file name is the course code, the period, and the date.</li>
-      </ul>
-    </details>
-    <details class="card guide-drop">
-      <summary>Student</summary>
-      <ul>
-        <li>The graph is each entry’s level over time. The average is the mean of those levels.</li>
-        <li>Level buttons set the achievement level. The slider sets the percent inside that band. Use The Average puts the level back to the mean.</li>
-        <li>Notes stay with the student. Save Checkpoint stores the average, level, percent, and notes as they are now.</li>
-        <li>Add Entry is at the top right. Export PDF Report is beside it.</li>
-      </ul>
-    </details>
-    <details class="card guide-drop">
-      <summary>Setup</summary>
-      <ul>
-        <li>Create New Class starts a class with its own students, seats, expectations, and entries.</li>
-        <li>Search For Courses, then choose the course. The title and grade fill in from that course.</li>
-        <li>Set the semester and period, then press Save Course Details.</li>
-        <li>Students are one name per line. Press Save Student List, or click outside the list. Renaming a line keeps that student’s entries. Deleting a line asks you to confirm.</li>
-        <li>Delete, at the bottom, removes that class from this device.</li>
-      </ul>
-    </details>
-    <details class="card guide-drop">
-      <summary>Expectations</summary>
-      <ul>
-        <li>Press Load Expectations From Curriculum. The app reads the ministry curriculum document for that course code. If the document includes specific expectations, choose overall expectations or overall and specific expectations. Then choose to replace the current list, or add these expectations to it.</li>
-        <li>Press Load Learning Skills. Choose to replace the current expectations, or to add the six learning skills to the existing list.</li>
-        <li>If that course code is not in the ministry document, type your own, one per line, then press Save Expectation List.</li>
-        <li>Each line is one expectation. New Entry names the document under Active Curriculum Document.</li>
-        <li>Choose Create Custom Expectation to write one for an entry. Leave Add This Custom Expectation To The List on to keep it for the class.</li>
-      </ul>
-    </details>
-    <details class="card guide-drop">
-      <summary>Google Drive</summary>
-      <ul>
-        <li>At the bottom of Setup, press Sign In, then Select Drive Folder, then Use This Folder.</li>
-        <li>Manual Save to Google Drive saves one CSV per class into that folder. The Autosaved line under the button is the last successful sync.</li>
-        <li>Every saved change is sent to that folder automatically.</li>
-        <li>Each file is named with the course code, the semester and year, and the period.</li>
-        <li>If you add data before signing in, the app reminds you the copy is only on this device.</li>
-      </ul>
-    </details>
-    <details class="card guide-drop">
-      <summary>Backup</summary>
-      <ul>
-        <li>Backup Class to CSV File downloads one file per class, then opens your mail app. Attach the files.</li>
-        <li>Restore Class from CSV File updates the classes in the file. Other classes on this device stay.</li>
-        <li>The working copy stays in this browser. This is not a board system or a Ministry application.</li>
-      </ul>
-    </details>
-  </article>`;
 }
 
 function saveCapture(course) {
@@ -1546,6 +1469,8 @@ function saveCapture(course) {
     showToast("Choose a level.");
     return;
   }
+  const customField = document.getElementById("custom-expectation");
+  if (customField && capture.expectationId === "custom") capture.customText = customField.value;
   if (!expectationReady(course, capture)) {
     showToast("Choose an expectation, or write a custom one.");
     render();
@@ -1557,11 +1482,21 @@ function saveCapture(course) {
     const text = capture.customText.trim();
     expectationLabel = text;
     if (capture.saveCustom) {
-      const created = { id: uid("exp"), label: buttonLabel(text), detail: text };
-      course.expectations.push(created);
-      expectationId = created.id;
-      expectationLabel = created.detail;
+      const label = buttonLabel(text);
+      const existing = course.expectations.find((item) => item.label.toLowerCase() === label.toLowerCase() || item.detail.trim().toLowerCase() === text.toLowerCase());
+      if (existing) {
+        expectationId = existing.id;
+        expectationLabel = existing.detail || existing.label;
+      } else {
+        const created = { id: uid("exp"), label, detail: text };
+        course.expectations.push(created);
+        expectationId = created.id;
+        expectationLabel = created.detail;
+      }
     } else expectationId = null;
+    const draft = classDraft(course.id);
+    draft.text = "";
+    draft.saveCustom = true;
   } else {
     const found = knownExpectation(course, capture.expectationId);
     expectationLabel = found?.label || "Expectation";
@@ -1586,18 +1521,16 @@ function saveCapture(course) {
   } else {
     course.entries.push({ id: uid("ev"), createdAt: new Date().toISOString(), ...payload });
   }
-  if (ui.focus[course.id] === "custom" && capture.expectationId === "custom") {
-    const draft = classDraft(course.id);
-    draft.text = text;
-    draft.saveCustom = capture.saveCustom;
-  }
   ui.stick = { kind: payload.kind, expectationId: expectationId || ui.stick.expectationId };
   if (expectationId) ui.focus[course.id] = expectationId;
+  else if (ui.focus[course.id] === "custom") ui.focus[course.id] = "";
   ui.capture = null;
   persist();
   showToast(`${kindById(payload.kind).label} saved · ${levelById(payload.level).name}`);
   warnIfGoogleMissing();
-  location.hash = hrefFor(course.id);
+  const next = hrefFor(course.id);
+  if ((location.hash || "#/") !== next) location.hash = next;
+  else render();
 }
 
 function ensureMark(course, studentId) {
@@ -1647,8 +1580,30 @@ function savedClassMessage(names, folderName) {
   return `Saved ${names.length} class files in ${folderName}.`;
 }
 
+function chooseBackupMode() {
+  modalEl.innerHTML = `<form method="dialog"><h2>Backup Class to CSV File</h2><p>Email the CSV file, or download it.</p><menu class="stack-menu">
+    <button class="primary" value="email" type="submit">Email the CSV File</button>
+    <button class="primary" value="download" type="submit">Download the CSV File</button>
+    <button class="ghost" value="cancel" type="submit">Cancel</button>
+  </menu></form>`;
+  modalEl.showModal();
+  return new Promise((resolve) => {
+    let choice = "";
+    modalEl.querySelectorAll("button[value]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (button.value === "email" || button.value === "download" || button.value === "cancel") choice = button.value;
+      });
+    });
+    modalEl.addEventListener("close", () => {
+      const value = choice || modalEl.returnValue;
+      resolve(value === "email" || value === "download" ? value : "");
+    }, { once: true });
+  });
+}
+
 function askEmail() {
-  modalEl.innerHTML = `<form method="dialog"><h2>Email The CSV</h2><p>Each class is its own file, named with the course code, the semester and year, and the period. The files download, then your mail app opens. Attach the CSVs to the message.</p><label class="field">Email Address<input id="backup-email" type="email" required value="${esc(db.backupEmail || "")}" placeholder="name@school.ca" /></label><menu><button class="ghost" value="cancel" type="submit">Cancel</button><button class="primary" value="ok" type="submit">Email CSV</button></menu></form>`;
+  const preset = googleEmail(sessionStorage.getItem("class-record-google-account")) || db.backupEmail || "";
+  modalEl.innerHTML = `<form method="dialog"><h2>Email The CSV</h2><p>Each class is its own file, named with the course code, the semester and year, and the period. The files download, then your mail app opens. Attach the CSVs to the message.</p><label class="field">Email Address<input id="backup-email" type="email" required value="${esc(preset)}" placeholder="name@school.ca" /></label><menu><button class="ghost" value="cancel" type="submit">Cancel</button><button class="primary" value="ok" type="submit">Email CSV</button></menu></form>`;
   const input = modalEl.querySelector("#backup-email");
   modalEl.showModal();
   input.focus();
@@ -1679,6 +1634,22 @@ async function emailBackup() {
   const names = downloadClassFiles();
   window.location.href = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent("Class Record backup")}&body=${encodeURIComponent(`Attach ${names.join(", ")}. Import a file to update that class. Other classes stay.`)}`;
   showToast("CSV files downloaded. Attach them to the email.");
+}
+
+async function backupClassFiles() {
+  const choice = await chooseBackupMode();
+  if (!choice) return;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  if (choice === "download") {
+    const names = downloadClassFiles();
+    if (!names.length) {
+      showToast("There is no class to save.");
+      return;
+    }
+    showToast(names.length === 1 ? "CSV file downloaded." : `${names.length} CSV files downloaded.`);
+    return;
+  }
+  return emailBackup();
 }
 
 function googleEmail(value) {
@@ -1895,7 +1866,7 @@ async function onClick(event) {
   const route = parseRoute();
   const course = courseById(route.courseId);
 
-  if (action === "email-backup") return emailBackup();
+  if (action === "email-backup") return backupClassFiles();
   if (action === "drive-backup") return driveBackup();
   if (action === "google-sign-in") {
     beginGoogleSignIn().catch((error) => showToast(error.message || "Google sign-in did not finish."));
@@ -2078,6 +2049,12 @@ async function onClick(event) {
     ui.capture.level = level.id;
     ui.capture.percent = level.midpoint;
     ui.capture.touched = true;
+    const customField = document.getElementById("custom-expectation");
+    if (customField) ui.capture.customText = customField.value;
+    if (course && ui.capture.expectationId === "custom" && ui.capture.saveCustom && expectationReady(course, ui.capture)) {
+      saveCapture(course);
+      return;
+    }
     render();
     return;
   }
