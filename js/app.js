@@ -1,13 +1,14 @@
-import { classCsvName, courseToCsv, stateFromCsv } from "./csv.js?v=9";
+import { classCsvName, courseToCsv, stateFromCsv } from "./csv.js?v=11";
 import { beginDriveFolder, beginGoogleSignIn, canListDrive, createDriveFolder, listFolders, storedGoogleToken, takeGoogleResult, takePickedFolder, uploadToFolder } from "./drive.js?v=14";
 import { expectationsForCode, findOntarioCourse, searchOntarioCourses } from "./ontario.js?v=18";
-import { emptyState, loadState, normalizeCourse, normalizeState, saveState } from "./store.js?v=6";
+import { emptyState, loadState, normalizeCourse, normalizeState, saveState } from "./store.js?v=8";
 import {
   KINDS,
   LEVELS,
   buttonLabel,
   formatDate,
   initials,
+  isBehaviourEntry,
   kindById,
   levelById,
   levelFromPercent,
@@ -18,7 +19,7 @@ import {
   summarizeStudent,
   todayISO,
   uid,
-} from "./model.js?v=3";
+} from "./model.js?v=4";
 
 const appEl = document.querySelector("#app");
 const toastEl = document.querySelector("#toast");
@@ -29,8 +30,9 @@ let db = emptyState();
 let ui = {
   date: todayISO(),
   focus: {},
+  behaviourFocus: {},
   classDraft: {},
-  stick: { kind: "observation", expectationId: null },
+  stick: { kind: "observation", expectationId: null, record: "assessment" },
   capture: null,
   search: "",
   codeQuery: "",
@@ -38,12 +40,16 @@ let ui = {
   studentLineIds: {},
   studentDraft: {},
   studentView: "tiles",
+  setupOpen: {},
+  entriesOpen: {},
+  checkpointDraft: {},
 };
 let toastTimer = 0;
 let drag = null;
 let ignoreClick = false;
 let loadCourseCode = "";
 let loadingExpectations = false;
+let scrollTilesToTop = false;
 
 function esc(value) {
   return String(value ?? "")
@@ -247,6 +253,26 @@ function knownExpectation(course, id) {
   return loadedExpectations(course).find((item) => item.id === id) || null;
 }
 
+function knownBehaviour(course, id) {
+  if (!id || !course) return null;
+  return (course.behaviourExpectations || []).find((item) => item.id === id) || null;
+}
+
+function behaviourChoices(course, selectedId) {
+  return (course.behaviourExpectations || [])
+    .map((item) => `<option value="${esc(item.id)}" ${item.id === selectedId ? "selected" : ""}>${esc(item.label)}</option>`)
+    .join("");
+}
+
+function exclusiveFocus(course) {
+  if (ui.behaviourFocus[course.id] && !knownBehaviour(course, ui.behaviourFocus[course.id])) ui.behaviourFocus[course.id] = "";
+  const focusId = ui.focus[course.id] || "";
+  if (focusId && focusId !== "custom" && !knownExpectation(course, focusId)) ui.focus[course.id] = "";
+  if (ui.behaviourFocus[course.id] && ui.focus[course.id]) ui.focus[course.id] = "";
+  if (ui.stick.record === "behaviour" && ui.stick.expectationId && !knownBehaviour(course, ui.stick.expectationId)) ui.stick.expectationId = null;
+  if (ui.stick.record !== "behaviour" && ui.stick.expectationId && !knownExpectation(course, ui.stick.expectationId)) ui.stick.expectationId = null;
+}
+
 function expectationMenu(course, selectedId) {
   const curriculum = curriculumFor(course);
   const items = loadedExpectations(course);
@@ -355,6 +381,43 @@ function chooseLearningSkillMode() {
   return chooseListMode("Load Learning Skills", "Replace the current expectations, or add the learning skills to the existing list?");
 }
 
+const SUGGESTED_BEHAVIOURS = [
+  "Arrives ready to learn",
+  "Follows the classroom routines",
+  "Listens while others are speaking",
+  "Uses respectful language",
+  "Stays on the task",
+  "Works safely",
+  "Treats materials and the space with care",
+  "Participates in the class activity",
+  "Asks for help when needed",
+  "Accepts feedback and tries again",
+  "Stays in class for the period",
+  "Uses bathroom breaks responsibly",
+  "Stores phone unless asked to use it.",
+  "Uses class time effectively",
+  "Avoids creating distractions",
+  "Avoids inappropriate physical contact with others",
+  "Treats others with respect",
+  "Avoids disruptive behaviour",
+  "Respect for the personal property of others",
+];
+
+function suggestedBehaviourRecords() {
+  return SUGGESTED_BEHAVIOURS.map((label, index) => ({
+    id: `beh-suggested-${index + 1}`,
+    label,
+    detail: label,
+    group: "Suggested",
+  }));
+}
+
+function applySuggestedBehaviours(course, mode) {
+  const incoming = suggestedBehaviourRecords();
+  const current = course.behaviourExpectations || [];
+  course.behaviourExpectations = mode === "add" ? appendExpectations(current, incoming) : incoming.map(expectationRecord);
+}
+
 function expectationRecord(item) {
   return { id: item.id, label: item.label, detail: item.detail || item.label, group: item.group || "" };
 }
@@ -394,7 +457,7 @@ function appendExpectations(current, incoming) {
 function finishExpectationEdit(course) {
   course.expectationsManaged = true;
   if (ui.focus[course.id] !== "custom" && !course.expectations.some((item) => item.id === ui.focus[course.id])) ui.focus[course.id] = "";
-  if (ui.stick.expectationId && !course.expectations.some((item) => item.id === ui.stick.expectationId)) ui.stick.expectationId = null;
+  if (ui.stick.record !== "behaviour" && ui.stick.expectationId && !course.expectations.some((item) => item.id === ui.stick.expectationId)) ui.stick.expectationId = null;
 }
 
 function applyLearningSkills(course, mode, existing) {
@@ -486,12 +549,16 @@ async function fetchCurriculumDocument(code, signal) {
 }
 
 function parseRoute() {
-  const parts = (location.hash || "#/").replace(/^#/, "").split("/").filter(Boolean).map(decodeURIComponent);
+  const hash = (location.hash || "#/").replace(/^#/, "");
+  const queryAt = hash.indexOf("?");
+  const path = queryAt === -1 ? hash : hash.slice(0, queryAt);
+  const params = new URLSearchParams(queryAt === -1 ? "" : hash.slice(queryAt + 1));
+  const parts = path.split("/").filter(Boolean).map(decodeURIComponent);
   if (parts[0] === "new") return { name: "new" };
   if (parts[0] === "c" && parts[1]) {
     const courseId = parts[1];
     const page = parts[2] || "class";
-    if (page === "capture" && parts[3]) return { name: "capture", courseId, studentId: parts[3], entryId: parts[4] || null };
+    if (page === "capture" && parts[3]) return { name: "capture", courseId, studentId: parts[3], entryId: parts[4] || null, returnTo: params.get("return") || "" };
     if (page === "s" && parts[3]) return { name: "student", courseId, studentId: parts[3] };
     if (["class", "roster", "setup"].includes(page)) return { name: page, courseId };
     return { name: "class", courseId };
@@ -516,9 +583,10 @@ function studentHref(courseId, studentId) {
   return `#/c/${encodeURIComponent(courseId)}/s/${encodeURIComponent(studentId)}`;
 }
 
-function captureHref(courseId, studentId, entryId) {
+function captureHref(courseId, studentId, entryId, returnTo) {
   const base = `#/c/${encodeURIComponent(courseId)}/capture/${encodeURIComponent(studentId)}`;
-  return entryId ? `${base}/${encodeURIComponent(entryId)}` : base;
+  const path = entryId ? `${base}/${encodeURIComponent(entryId)}` : base;
+  return returnTo ? `${path}?return=${encodeURIComponent(returnTo)}` : path;
 }
 
 function sessionOn(course, date) {
@@ -536,6 +604,7 @@ function ensureSession(course, date) {
 
 function expectationReady(course, capture) {
   if (!capture) return false;
+  if (capture.record === "behaviour") return Boolean(knownBehaviour(course, capture.expectationId));
   if (capture.expectationId === "custom") return capture.customText.trim().length > 0;
   return Boolean(knownExpectation(course, capture.expectationId));
 }
@@ -563,6 +632,7 @@ function render() {
     persist();
   }
   const course = courseById(route.courseId);
+  if (course) exclusiveFocus(course);
   if (route.name === "capture" && course) ensureCapture(course, route);
   else ui.capture = null;
 
@@ -614,8 +684,23 @@ function paint(route, course) {
       ? renderStudent(course, student)
       : `<section class="card"><h1>That Student Is Not In This Course</h1><p><a href="${hrefFor(course.id, "roster")}">Back to the roster</a></p></section>`;
   }
+  const alignTiles = scrollTilesToTop && route.name === "class";
   appEl.innerHTML = shell(route, course, body);
-  requestAnimationFrame(fitSeatTiles);
+  requestAnimationFrame(() => {
+    fitSeatTiles();
+    if (!alignTiles) return;
+    scrollTilesToTop = false;
+    scrollStudentListToTop();
+  });
+}
+
+function scrollStudentListToTop() {
+  const panel = document.querySelector(".seat-plan");
+  if (!panel) return;
+  const bar = document.querySelector(".appbar");
+  const offset = bar ? bar.getBoundingClientRect().height : 0;
+  const top = window.scrollY + panel.getBoundingClientRect().top - offset;
+  window.scrollTo(0, Math.max(0, top));
 }
 
 function fitSeatTiles() {
@@ -701,8 +786,8 @@ function shell(route, course, body) {
     ? `<nav class="tabs" aria-label="Course">
         ${tab(course, "class", "NEW ENTRY", route)}
         <div class="tab-row">
-          ${tab(course, "roster", "EVIDENCE", route)}
-          ${tab(course, "setup", "SETUP", route)}
+          ${tab(course, "roster", "COLLECTED EVIDENCE", route)}
+          ${tab(course, "setup", "CLASS SETUP", route)}
         </div>
       </nav>`
     : "";
@@ -720,7 +805,7 @@ function shell(route, course, body) {
   const title = heading ? `<div class="course-heading"><h1>${heading}</h1>${lede ? `<p class="lede">${lede}</p>` : ""}</div>` : "";
   const switcher = classSwitcher(course);
   const header = switcher || courseLede
-    ? `<header class="appbar"><div class="class-panel">${switcher}${courseLede ? `<p class="lede course-lede">${courseLede}</p>` : ""}</div></header>`
+    ? `<header class="appbar"><div class="class-panel">${switcher}${courseLede ? `<p class="lede course-lede">${courseLede}</p>` : ""}${course ? `<p class="sub sync-time noprint">${esc(lastSyncText())}</p>` : ""}</div></header>`
     : "";
   return `<div class="shell ${capturing ? "is-capture" : ""}">
     ${brandBanner()}
@@ -827,7 +912,7 @@ function weekStartFor(course) {
 
 function weeklyEntryCount(course, studentId, start) {
   const end = shiftISO(start, 6);
-  return course.entries.filter((entry) => entry.studentId === studentId && entry.date >= start && entry.date <= end).length;
+  return course.entries.filter((entry) => entry.studentId === studentId && !isBehaviourEntry(entry) && entry.date >= start && entry.date <= end).length;
 }
 
 function seatLayout(course) {
@@ -867,13 +952,15 @@ function renderClass(course) {
     .map((student) => {
       if (!student) return `<div class="tile is-empty" aria-hidden="true"></div>`;
       const weekly = weeklyEntryCount(course, student.id, weekStart);
-      const total = course.entries.filter((entry) => entry.studentId === student.id).length;
+      const total = course.entries.filter((entry) => entry.studentId === student.id && !isBehaviourEntry(entry)).length;
       const tone = target ? (weekly >= target ? "is-met" : "is-short") : "";
       const progress = target ? `, ${weekly} of ${target} toward the weekly goal` : "";
       return `<div class="tile ${tone}" data-student="${esc(student.id)}"><span class="tile-count week" aria-hidden="true">${weekly}</span><span class="tile-count total" aria-hidden="true">${total}</span><a href="${captureHref(course.id, student.id)}" aria-label="${esc(studentName(student))}, ${weekly} this week, ${total} total${esc(progress)}"><strong>${esc(initials(student))}</strong></a></div>`;
     })
     .join("");
   const expectationOptions = expectationMenu(course, focusId);
+  const behaviourFocusId = ui.behaviourFocus[course.id] || "";
+  const behaviourOptions = behaviourChoices(course, behaviourFocusId);
   const draft = classDraft(course.id);
   const listView = ui.studentView === "list";
   const studentOptions = seatedStudents(course)
@@ -881,12 +968,13 @@ function renderClass(course) {
     .join("");
   const tileBlock = course.students.length
     ? `<div class="floor-slot"><div class="floor-fit" style="--cols:${layout.columns};--rows:${layout.rows}"><div class="floor">${tiles}</div></div></div><p class="sub seat-note">Drag tiles to rearrange them.</p>`
-    : `<p>Add students in Setup, then record from here.</p>`;
-  const seatControls = `<div class="row seats-row">
+    : `<p>Add your student to the list in Class Setup.</p>`;
+  const seatControls = `<p class="tap-note">Tap a tile to add entry.</p>
+      <div class="row seats-row">
         <label class="field">Cols<input id="seat-columns" type="number" min="2" max="8" value="${layout.columns}" /></label>
         <label class="field">Rows<input id="seat-rows" type="number" min="1" max="8" value="${layout.rows}" /></label>
       </div>`;
-  return `<div class="stack">
+  return `<div class="stack class-page">
     ${sampleBanner(course)}
     <section class="panel seat-plan">
       <div class="panel-head">
@@ -896,14 +984,15 @@ function renderClass(course) {
       ${listView
         ? (course.students.length
           ? `<label class="field">Student<select id="student-list-pick"><option value="">Choose A Student</option>${studentOptions}</select></label>`
-          : `<p>Add students in Setup, then record from here.</p>`)
+          : `<p>Add your student to the list in Class Setup.</p>`)
         : `${tileBlock}${seatControls}`}
     </section>
     <section class="panel entry-panel">
       <h2>NEW ENTRY DETAILS</h2>
       <div class="class-focus">
-        <label class="field"><select id="focus-expectation" aria-label="Curriculum Expectation"><option value="">Choose An Expectation</option>${expectationOptions.html}${customExpectationOption(focusId === "custom")}</select></label>
+        <label class="field">Assessment Expectation<select id="focus-expectation" aria-label="Assessment Expectation"><option value="">Choose an Assessment Expectation</option>${expectationOptions.html}${customExpectationOption(focusId === "custom")}</select></label>
         ${focusId === "custom" ? customExpectationFields({ text: draft.text, saveCustom: draft.saveCustom, textId: "class-custom-expectation", checkId: "class-save-custom" }) : ""}
+        <label class="field">Behaviour Expectation<select id="focus-behaviour" aria-label="Behaviour Expectation"><option value="">Choose A Behaviour Expectation</option>${behaviourOptions}</select></label>
         <label class="field"><input id="class-date" type="date" aria-label="Class Date" value="${esc(ui.date)}" /></label>
         <label class="field"><input id="class-topic" type="text" placeholder="Current Class Topic (Optional)" aria-label="Topic" value="${esc(session?.topic || "")}" /></label>
         <div class="doc-note">
@@ -913,12 +1002,12 @@ function renderClass(course) {
       </div>
     </section>
     <section class="panel week-plan">
-      <h2>WEEKLY DATA GOAL</h2>
+      <h2>DATA COLLECTION GOALS</h2>
       <div class="row week-row">
         <label class="field">Week Of<input id="week-start" type="date" value="${esc(weekStart)}" /></label>
         <label class="field week-goal">Weekly Goal<input id="weekly-target" type="range" min="0" max="10" step="1" value="${target}" /><output id="weekly-target-value" for="weekly-target">${target}</output></label>
       </div>
-      <p class="week-note">Week Of is the first day of the week being counted, and that week includes the next six days. Choose how many entries each student should have in that week. 0 leaves the tiles light grey. A chosen goal turns a tile yellow until the student reaches it, then green.</p>
+      <p class="week-note">Week Of is the first day of the week period. Choose your entries per student goal for the week. 0 leaves the tiles light grey. A chosen goal turns a tile yellow until goal is achieved for each student. Green tiles have met the weekly goal.</p>
     </section>
   </div>`;
 }
@@ -931,9 +1020,10 @@ function sampleBanner(course) {
 function entryCard(course, entry) {
   const student = studentById(course, entry.studentId);
   const level = levelById(entry.level);
+  const kindLabel = `${kindById(entry.kind).label}${isBehaviourEntry(entry) ? " · Behaviour" : ""}`;
   return `<article class="entry">
     <header>
-      <strong>${esc(student ? studentName(student) : "Student")} · ${esc(kindById(entry.kind).label)}</strong>
+      <strong>${esc(student ? studentName(student) : "Student")} · ${esc(kindLabel)}</strong>
       <span class="mini lv-${esc(entry.level)}">${esc(level ? level.name : "Level")} · ${esc(entry.percent)}%</span>
     </header>
     <div>${esc(entry.expectationLabel)}</div>
@@ -956,15 +1046,17 @@ function ensureCapture(course, route) {
       ui.capture = null;
       return;
     }
-    const stillThere = Boolean(knownExpectation(course, entry.expectationId));
+    const behaviourEntry = isBehaviourEntry(entry);
+    const stillThere = behaviourEntry ? Boolean(knownBehaviour(course, entry.expectationId)) : Boolean(knownExpectation(course, entry.expectationId));
     ui.capture = {
       key,
       date: entry.date,
       studentId: entry.studentId,
       entryId: entry.id,
       kind: entry.kind,
-      expectationId: stillThere ? entry.expectationId : "custom",
-      customText: stillThere ? "" : entry.expectationLabel,
+      record: behaviourEntry ? "behaviour" : "assessment",
+      expectationId: behaviourEntry ? (stillThere ? entry.expectationId : null) : (stillThere ? entry.expectationId : "custom"),
+      customText: behaviourEntry || stillThere ? "" : entry.expectationLabel,
       saveCustom: false,
       level: entry.level,
       percent: entry.percent,
@@ -975,17 +1067,21 @@ function ensureCapture(course, route) {
     };
     return;
   }
-  const focusId = ui.focus[course.id] || "";
+  const behaviourFocusId = knownBehaviour(course, ui.behaviourFocus[course.id]) ? ui.behaviourFocus[course.id] : "";
+  const focusId = behaviourFocusId ? "" : (ui.focus[course.id] || "");
   const draft = classDraft(course.id);
-  const useCustom = focusId === "custom";
-  const preferred = focusId || ui.stick.expectationId;
+  const useBehaviour = Boolean(behaviourFocusId);
+  const useCustom = !useBehaviour && focusId === "custom";
+  const stickExpectation = ui.stick.record === "behaviour" ? null : ui.stick.expectationId;
+  const preferred = useBehaviour ? behaviourFocusId : (focusId || stickExpectation);
   ui.capture = {
     key,
     date: ui.date,
     studentId: route.studentId,
     entryId: null,
     kind: ui.stick.kind || "observation",
-    expectationId: useCustom ? "custom" : knownExpectation(course, preferred) ? preferred : null,
+    record: useBehaviour ? "behaviour" : "assessment",
+    expectationId: useBehaviour ? behaviourFocusId : useCustom ? "custom" : knownExpectation(course, preferred) ? preferred : null,
     customText: useCustom ? draft.text : "",
     saveCustom: useCustom ? draft.saveCustom : true,
     level: null,
@@ -999,35 +1095,45 @@ function ensureCapture(course, route) {
 
 function renderCapture(course, student) {
   const capture = ui.capture;
-  const selected = knownExpectation(course, capture.expectationId);
+  const behaviourEntry = capture.record === "behaviour";
+  const selected = behaviourEntry ? null : knownExpectation(course, capture.expectationId);
+  const behaviourSelected = behaviourEntry ? knownBehaviour(course, capture.expectationId) : null;
   const expectationOk = expectationReady(course, capture);
   const ready = capture.touched && expectationOk;
   const saveLabel = ready ? "Save Entry" : expectationOk ? "Choose Level To Save Entry" : "No Expectation Selected";
-  const expectationOptions = expectationMenu(course, capture.expectationId);
+  const expectationOptions = expectationMenu(course, behaviourEntry ? "" : capture.expectationId);
   const levelButtons = LEVELS.filter((item) => item.id !== "0")
     .map((item) => `<button type="button" class="level-btn" data-action="pick-level" data-level="${item.id}" aria-pressed="${capture.touched && capture.level === item.id}"><b>${item.short}</b><small>${item.band}</small></button>`)
     .join("");
+  const backHref = parseRoute().returnTo === "student" ? studentHref(course.id, student.id) : hrefFor(course.id);
   return `<form class="capture" data-action="save-form">
-    <a class="back" href="${hrefFor(course.id)}">← ${esc(formatDate(capture.date || ui.date))}</a>
+    <a class="back" href="${backHref}">← ${esc(formatDate(capture.date || ui.date))}</a>
     <h1>${esc(studentName(student))}</h1>
     <section>
       <div class="kind-row">
         ${["observation", "conversation"].map((id) => KINDS.find((kind) => kind.id === id)).map((kind) => `<button type="button" class="kind-btn ${kind.id === "observation" ? "observation" : ""}" data-action="pick-kind" data-kind="${kind.id}" aria-pressed="${capture.kind === kind.id}">${kind.label}</button>`).join("")}
       </div>
     </section>
-    <section>
-      <label class="field">
-        <select id="expectation-select" aria-label="Expectation">
-          <option value="">Choose An Expectation</option>
+    <section class="capture-expectations">
+      <label class="field">Assessment Expectation
+        <select id="expectation-select" aria-label="Assessment Expectation">
+          <option value="">Choose an Assessment Expectation</option>
           ${expectationOptions.html}
-          ${customExpectationOption(capture.expectationId === "custom")}
+          ${customExpectationOption(!behaviourEntry && capture.expectationId === "custom")}
         </select>
       </label>
-      ${capture.expectationId === "custom"
+      ${!behaviourEntry && capture.expectationId === "custom"
         ? customExpectationFields({ text: capture.customText, saveCustom: capture.saveCustom, textId: "custom-expectation", checkId: "save-custom" })
         : selected
           ? `<p class="chosen">${esc(expectationDescription(selected.detail) || selected.label)}</p>`
           : ""}
+      <label class="field">Behaviour Expectation
+        <select id="behaviour-select" aria-label="Behaviour Expectation">
+          <option value="">Choose A Behaviour Expectation</option>
+          ${behaviourChoices(course, behaviourSelected ? capture.expectationId : "")}
+        </select>
+      </label>
+      ${behaviourSelected ? `<p class="chosen">${esc(expectationDescription(behaviourSelected.detail) || behaviourSelected.label)}</p>` : ""}
       <div class="evidence-actions">
         <button type="button" class="primary" data-action="add-photo">Add Photo</button>
         <button type="button" class="primary" data-action="add-note">Add Note</button>
@@ -1082,7 +1188,7 @@ function reportChartSvg({ aria, yTitle, yTicks, points, connect }) {
   return `<svg class="report-graph" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(aria)}">${yLabel}${ticks}${axis}${line}${dots}${dates}${xLabel}</svg>`;
 }
 
-function reportPerformance(entries) {
+function reportPerformance(entries, { title, empty, caption }) {
   const levelPoints = [...entries].reverse().filter((entry) => levelById(entry.level)).map((entry) => ({
     t: Number(entry.level) / 4,
     kind: entry.kind,
@@ -1091,15 +1197,15 @@ function reportPerformance(entries) {
   }));
   const levelChart = levelPoints.length
     ? reportChartSvg({
-      aria: `Achievement level over time, oldest to newest. ${levelPoints.map((point) => point.title).join("; ")}`,
+      aria: `${title}, oldest to newest. ${levelPoints.map((point) => point.title).join("; ")}`,
       yTitle: "Achievement Level",
       yTicks: [0, 1, 2, 3, 4].map((level) => ({ t: level / 4, label: String(level) })),
       points: levelPoints,
       connect: true,
     })
-    : `<p>No levels recorded yet.</p>`;
-  return `<h2>Levels Over Time</h2>
-    <figure class="report-chart">${levelChart}${reportLegend()}<p>The line joins each recorded level, oldest on the left. Each point is one conversation or observation. The vertical axis is the achievement level, and 0 is below Level 1.</p></figure>`;
+    : `<p>${esc(empty)}</p>`;
+  return `<h2>${esc(title)}</h2>
+    <figure class="report-chart">${levelChart}${reportLegend()}<p>${esc(caption)}</p></figure>`;
 }
 
 function classReportLine(course) {
@@ -1108,7 +1214,7 @@ function classReportLine(course) {
 
 function studentReportPage(course, student) {
   const summary = summarizeStudent(course, student);
-  const average = averageLevel(summary.entries);
+  const average = averageLevel(summary.assessment);
   const bars = LEVELS.map((level) => `<span class="lv-${level.id}">${level.short} · ${summary.byLevel[level.id]}</span>`).join("");
   const notes = String(summary.mark?.comment || "").trim();
   const checkpoints = Array.isArray(summary.mark?.checkpoints) ? summary.mark.checkpoints : [];
@@ -1117,21 +1223,34 @@ function studentReportPage(course, student) {
     ? entries.map((entry) => {
       const level = levelById(entry.level);
       const note = [String(entry.note || "").trim(), photoSrc(entry.photo) ? "Photo attached." : ""].filter(Boolean).join(" ");
-      return `<tr><td>${esc(formatDate(entry.date))}</td><td>${esc(kindById(entry.kind).label)}</td><td>${esc(entry.expectationLabel || "")}</td><td>${esc(level ? level.name : "")}</td><td>${Number.isFinite(Number(entry.percent)) ? `${esc(entry.percent)}%` : ""}</td><td>${esc(note)}</td></tr>`;
+      const kindLabel = `${kindById(entry.kind).label}${isBehaviourEntry(entry) ? " · Behaviour" : ""}`;
+      return `<tr><td>${esc(formatDate(entry.date))}</td><td>${esc(kindLabel)}</td><td>${esc(entry.expectationLabel || "")}</td><td>${esc(level ? level.name : "")}</td><td>${Number.isFinite(Number(entry.percent)) ? `${esc(entry.percent)}%` : ""}</td><td>${esc(note)}</td></tr>`;
     }).join("")
     : `<tr><td colspan="6">No entries yet.</td></tr>`;
   const checkpointBlock = checkpoints.length
     ? `<h2>Checkpoints</h2><ul class="report-list">${checkpoints.map((item) => `<li><strong>${esc(item.name || "Checkpoint")}</strong>${item.date ? ` · ${esc(formatDate(item.date))}` : ""}${item.average != null && item.average !== "" ? ` · Average ${esc(Number(item.average).toFixed(1))}` : ""}${item.note ? ` · ${esc(item.note)}` : ""}</li>`).join("")}</ul>`
     : "";
-  const countLabel = `${summary.entries.length} ${summary.entries.length === 1 ? "entry" : "entries"}`;
+  const countLabel = `${summary.assessment.length} ${summary.assessment.length === 1 ? "assessment entry" : "assessment entries"}`;
+  const behaviourNote = summary.behaviour.length
+    ? ` ${summary.behaviour.length} behaviour ${summary.behaviour.length === 1 ? "entry is" : "entries are"} listed separately and not included in the average.`
+    : "";
   return `<article class="report-page">
     <p class="report-brand">MARCBOOK</p>
     <h1>${esc(studentName(student))}</h1>
     <p class="report-meta">${esc(classReportLine(course))}</p>
     <h2>Levels</h2>
     <div class="tally">${bars}</div>
-    <p>${average == null ? "No levels recorded yet." : `Average level ${esc(levelSummaryText(average))} from ${countLabel}.`} ${summary.counts.conversation} conversations and ${summary.counts.observation} observations.</p>
-    ${reportPerformance(summary.entries)}
+    <p>${average == null ? "No assessment levels recorded yet." : `Average level ${esc(levelSummaryText(average))} from ${countLabel}.`}${behaviourNote} ${summary.counts.conversation} conversations and ${summary.counts.observation} observations.</p>
+    ${reportPerformance(summary.assessment, {
+      title: "Assessment Expectations",
+      empty: "No levels recorded yet.",
+      caption: "The line joins each recorded assessment level, oldest on the left. Each point is one conversation or observation. The vertical axis is the achievement level, and 0 is below Level 1.",
+    })}
+    ${reportPerformance(summary.behaviour, {
+      title: "Behaviour Expectations",
+      empty: "No behaviour entries yet.",
+      caption: "The line joins each recorded behaviour entry, oldest on the left. Behaviour entries are not included in the average or the level counts.",
+    })}
     ${notes ? `<h2>Notes</h2><p class="report-notes">${esc(notes)}</p>` : ""}
     <h2>Entries</h2>
     <table class="report-table"><thead><tr><th>Date</th><th>Kind</th><th>Expectation</th><th>Level</th><th>Percent</th><th>Note</th></tr></thead><tbody>${entryRows}</tbody></table>
@@ -1205,10 +1324,10 @@ function renderRoster(course) {
       return `<article class="card summary-card">
         <a class="summary-row" href="${studentHref(course.id, student.id)}">
           <strong>${esc(studentName(student))}</strong>
-          ${trendLine(summary.entries)}
+          ${trendLine(summary.assessment)}
           <div class="summary-side">
-            <div class="tally" aria-label="Entries By Level">${bars}</div>
-            <p class="sub">${summary.counts.conversation} conversations · ${summary.counts.observation} observations</p>
+            <div class="tally" aria-label="Assessment Entries By Level">${bars}</div>
+            <p class="sub">${summary.counts.conversation} conversations · ${summary.counts.observation} observations${summary.behaviour.length ? ` · ${summary.behaviour.length} behaviour ${summary.behaviour.length === 1 ? "entry" : "entries"}` : ""}</p>
           </div>
         </a>
         <div class="summary-actions noprint">
@@ -1221,7 +1340,7 @@ function renderRoster(course) {
     <button type="button" class="primary full-button noprint" data-action="export-class-pdf">Export All Reports</button>
     <label class="field noprint"><input id="roster-search" type="search" value="${esc(ui.search)}" placeholder="Find A Student" aria-label="Find A Student" /></label>
     <div class="summary-list">${rows || "<p>No students match.</p>"}</div>
-    <p class="sub">The numbers are how many entries sit at each level, from Level 4 to below Level 1. The line is each recorded percent, oldest to newest. Neither one is a calculated mark.</p>
+    <p class="sub">The numbers count assessment entries at each level, from Level 4 to below Level 1. The line is each recorded assessment percent, oldest to newest. Behaviour entries are listed on the student summary and are not included in these counts. Neither one is a calculated mark.</p>
   </div>`;
 }
 
@@ -1355,6 +1474,13 @@ function percentFromLevelValue(value) {
   return Math.round(stops[lower] + (stops[upper] - stops[lower]) * (clamped - lower));
 }
 
+const CHECKPOINT_NAMES = ["Progress Report", "Midterm Report", "Final Report"];
+
+function checkpointDraft(studentId) {
+  if (!ui.checkpointDraft[studentId]) ui.checkpointDraft[studentId] = { choice: "", custom: "" };
+  return ui.checkpointDraft[studentId];
+}
+
 function checkpointList(checkpoints) {
   const items = Array.isArray(checkpoints) ? checkpoints : [];
   if (!items.length) return `<p class="sub">No checkpoints saved.</p>`;
@@ -1384,7 +1510,7 @@ function chosenMark(mark, average) {
 function renderStudent(course, student) {
   const summary = summarizeStudent(course, student);
   const mark = summary.mark || {};
-  const average = averageLevel(summary.entries);
+  const average = averageLevel(summary.assessment);
   const chosen = chosenMark(mark, average);
   const levelButtons = LEVELS.filter((item) => item.id !== "0")
     .map((item) => `<button type="button" class="level-btn" data-action="set-mark" data-student="${esc(student.id)}" data-level="${item.id}" aria-pressed="${chosen.level?.id === item.id}" ${chosen.level ? "" : "disabled"}><b>${item.short}</b><small>${item.band}</small></button>`)
@@ -1392,29 +1518,39 @@ function renderStudent(course, student) {
   const groups = summary.expectations
     .map((item) => `<li><strong>${esc(item.label)}</strong> · ${item.count} ${item.count === 1 ? "entry" : "entries"}</li>`)
     .join("");
+  const behaviourGroups = summary.behaviours
+    .map((item) => `<li><strong>${esc(item.label)}</strong> · ${item.count} ${item.count === 1 ? "entry" : "entries"}</li>`)
+    .join("");
   return `<div class="stack">
     <div class="student-head">
       <a href="${hrefFor(course.id, "roster")}">← Summary</a>
       <div class="student-actions noprint">
         <button type="button" class="ghost" data-action="export-student-pdf" data-student="${esc(student.id)}">Export PDF Report</button>
-        <a class="primary" href="${captureHref(course.id, student.id)}">Add Entry</a>
+        <a class="primary" href="${captureHref(course.id, student.id, null, "student")}">Add Entry</a>
       </div>
       <h2 class="student-name">${esc(studentName(student))}</h2>
     </div>
     <section class="card">
-      <div class="tally">${LEVELS.map((level) => `<span class="lv-${level.id}">${level.short} · ${summary.byLevel[level.id]}</span>`).join("")}</div>
-      <p>${summary.counts.conversation} conversations and ${summary.counts.observation} observations. These are the counts at each level.</p>
-      ${groups ? `<ul>${groups}</ul>` : `<p class="sub">No entries yet.</p>`}
+      <div class="tally student-tally">${LEVELS.map((level) => `<span class="lv-${level.id}">${level.short} · ${summary.byLevel[level.id]}</span>`).join("")}</div>
+      <p>${summary.counts.conversation} conversations and ${summary.counts.observation} observations. These counts include assessment entries only.</p>
+      ${groups ? `<ul>${groups}</ul>` : `<p class="sub">No assessment entries yet.</p>`}
     </section>
     <section class="card">
-      <h2>Levels Over Time</h2>
+      <h2>Assessment Expectations</h2>
       <p class="sub">Each point is one conversation or observation. The vertical axis is the achievement level, and 0 is below Level 1.</p>
-      ${levelScatter(summary.entries)}
+      ${summary.assessment.length ? levelScatter(summary.assessment) : `<p class="sub">No assessment entries yet.</p>`}
+    </section>
+    <section class="card">
+      <h2>Behaviour Expectations</h2>
+      <p class="sub">Each point is one behaviour entry. These entries are listed here and in All Entries. They are not included in the average or the level counts.</p>
+      ${summary.behaviour.length ? levelScatter(summary.behaviour) : `<p class="sub">No behaviour entries yet.</p>`}
+      ${behaviourGroups ? `<ul>${behaviourGroups}</ul>` : ""}
     </section>
     <section class="panel">
-      <h2>Average Level</h2>
+      <h2>Current Average Level</h2>
+      <p class="sub">This is calculated as an average from assessment entries. Behaviour entries are not included. Tune this value manually using the slider or the level options before creating a Checkpoint snapshot.</p>
       <p class="readout" id="level-readout">${average == null ? "No levels recorded yet" : esc(levelSummaryText(average))}</p>
-      <p class="sub">${average == null ? "Record a level before choosing one here." : `Average of the recorded levels: ${average.toFixed(1)} from ${summary.entries.length} ${summary.entries.length === 1 ? "entry" : "entries"}.`}</p>
+      <p class="sub">${average == null ? "Record an assessment level before choosing one here." : `Average of the recorded assessment levels: ${average.toFixed(1)} from ${summary.assessment.length} ${summary.assessment.length === 1 ? "entry" : "entries"}.`}</p>
       <div class="level-row">${levelButtons}</div>
       <button type="button" class="chip-btn below-btn" data-action="set-mark" data-student="${esc(student.id)}" data-level="0" aria-pressed="${chosen.level?.id === "0"}" ${chosen.level ? "" : "disabled"}>Below Level 1 · Under 50%</button>
       <label class="field">Percentage<input id="percent-slider" data-student="${esc(student.id)}" type="range" min="${chosen.level ? chosen.level.min : 0}" max="${chosen.level ? chosen.level.max : 100}" step="1" value="${chosen.percent ?? 0}" ${chosen.level ? "" : "disabled"} /></label>
@@ -1426,25 +1562,29 @@ function renderStudent(course, student) {
       <h2>Checkpoints</h2>
       <p class="sub">Save a snapshot for a report, such as a midterm. It keeps the average, the level, the percentage, and the notes as they are now.</p>
       <div class="row checkpoint-save">
-        <label class="field">Checkpoint<input id="checkpoint-name" list="checkpoint-names" placeholder="Midterm Report" data-student="${esc(student.id)}" /></label>
+        <label class="field">Checkpoint<select id="checkpoint-name" data-student="${esc(student.id)}" aria-label="Checkpoint">${["", ...CHECKPOINT_NAMES, "custom"].map((value) => {
+          const label = value === "" ? "Choose A Checkpoint" : value === "custom" ? "Custom" : value;
+          return `<option value="${esc(value)}" ${checkpointDraft(student.id).choice === value ? "selected" : ""}>${label}</option>`;
+        }).join("")}</select></label>
         <button type="button" class="primary save" data-action="save-checkpoint" data-student="${esc(student.id)}">Save Checkpoint</button>
       </div>
-      <datalist id="checkpoint-names">
-        <option value="Progress report"></option>
-        <option value="Midterm report"></option>
-        <option value="Final report"></option>
-      </datalist>
+      ${checkpointDraft(student.id).choice === "custom" ? `<label class="field">Custom Name<input id="checkpoint-custom" type="text" placeholder="Checkpoint Name" value="${esc(checkpointDraft(student.id).custom)}" /></label>` : ""}
       ${checkpointList(mark.checkpoints)}
     </section>
-    <section class="stack">
-      <h2>Entries</h2>
+    <details class="card stack setup-fold entry-fold" data-entries="${esc(student.id)}"${ui.entriesOpen[student.id] ? " open" : ""}>
+      <summary>All Entries for ${esc(studentName(student))}</summary>
       ${summary.entries.length ? summary.entries.map((entry) => entryCard(course, entry)).join("") : `<p class="sub">Nothing recorded yet.</p>`}
-    </section>
+    </details>
   </div>`;
 }
 
 function driveIcon() {
   return `<svg viewBox="0 0 87.3 78" aria-hidden="true"><path fill="#0066da" d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z"/><path fill="#00ac47" d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0-1.2 4.5h27.5z"/><path fill="#ea4335" d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z"/><path fill="#00832d" d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z"/><path fill="#2684fc" d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z"/><path fill="#ffba00" d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z"/></svg>`;
+}
+
+function setupFold(id, title, body, extra = "stack") {
+  const open = ui.setupOpen[id] ? " open" : "";
+  return `<details class="card ${extra} setup-fold" data-fold="${esc(id)}"${open}><summary>${title}</summary>${body}</details>`;
 }
 
 function renderSetup(course) {
@@ -1453,13 +1593,8 @@ function renderSetup(course) {
   if (draft == null) ui.studentLineIds[course.id] = listedStudents.map((student) => student.id);
   const studentLines = draft != null ? draft : listedStudents.map((student) => studentName(student)).join("\n");
   const codeGrade = findOntarioCourse(course.code)?.grade ?? course.grade;
-  return `<div class="stack">
-    <div class="stack noprint setup-actions">
-      <a class="primary setup-add" href="#/new">Create New Class</a>
-      <p class="sub sync-time">${esc(lastSyncText())}</p>
-    </div>
-    <form class="card form-grid" data-action="save-course">
-      <h2 class="span-2">COURSE DETAILS</h2>
+  const behaviourLines = (course.behaviourExpectations || []).map((item) => item.label).join("\n");
+  const courseFold = setupFold("course", "COURSE DETAILS", `<form class="form-grid" data-action="save-course">
       ${courseCodeFields(course.code)}
       <label class="field">Course Title<input name="name" type="text" value="${esc(course.name)}" required /></label>
       <label class="field">Grade<select name="grade">${gradeOptions(codeGrade)}</select></label>
@@ -1468,23 +1603,27 @@ function renderSetup(course) {
       <div class="span-2">
         <button class="primary full-button save" type="submit">Save Course Details</button>
       </div>
-    </form>
-    <section class="card stack">
-      <div class="expect-lead">
-        <h2>EXPECTATIONS</h2>
-        <p>Add custom expectations by simply adding them to the list below. One expectation per line only.</p>
-      </div>
+    </form>`, "form-fold");
+  const expectationFold = setupFold("expectations", "ASSESSMENT EXPECTATIONS", `<p>Add custom expectations by simply adding them to the list below or select an option for suggested expectations. One expectation per line only.</p>
       <button type="button" class="primary full-button" data-action="reload-expectations">Load Expectations From Curriculum</button>
-      <button type="button" class="primary full-button" data-action="load-learning-skills">Load Learning Skills</button>
+      <button type="button" class="primary full-button load-follow" data-action="load-learning-skills">Load Learning Skills</button>
       <textarea id="expectation-list" aria-label="Expectations For This Class, One Per Line" rows="${Math.max(8, loadedExpectations(course).length + 1)}" spellcheck="false">${esc(loadedExpectations(course).map((item) => item.label).join("\n"))}</textarea>
-      <button type="button" class="primary save" data-action="save-expectation-list">Save Expectation List</button>
-    </section>
-    <section class="card stack">
-      <h2>STUDENT LIST (<span class="course-code-mark">${esc(course.code)}</span>)</h2>
-      <textarea id="student-list" aria-label="Students, One Name Per Line" rows="${Math.max(8, sortedStudents(course).length + 1)}" spellcheck="false">${esc(studentLines)}</textarea>
+      <button type="button" class="primary save" data-action="save-expectation-list">Save Expectation List</button>`);
+  const studentFold = setupFold("students", "STUDENT LIST", `<textarea id="student-list" aria-label="Students, One Name Per Line" rows="${Math.max(8, sortedStudents(course).length + 1)}" spellcheck="false">${esc(studentLines)}</textarea>
       <button type="button" class="primary save" data-action="save-student-list">Save Student List</button>
-      <p class="sub">One student per line. Change a name, add a line, or delete a line, then press Save Student List.</p>
-    </section>
+      <p class="sub">One student per line. Change a name, add a line, or delete a line, then press Save Student List.</p>`);
+  const behaviourFold = setupFold("behaviour", "BEHAVIOUR EXPECTATIONS", `<p>Add behaviour expectations by adding them to the list below or select an option for suggested expectations. One expectation per line only.</p>
+      <button type="button" class="primary full-button" data-action="load-behaviour-suggestions">Load Suggested Behaviour Expectations</button>
+      <textarea id="behaviour-list" aria-label="Behaviour Expectations, One Per Line" rows="${Math.max(8, (course.behaviourExpectations || []).length + 1)}" spellcheck="false">${esc(behaviourLines)}</textarea>
+      <button type="button" class="primary save" data-action="save-behaviour-list">Save Behaviour Expectation List</button>`);
+  return `<div class="stack">
+    <div class="stack noprint setup-actions">
+      <a class="primary setup-add" href="#/new">Create New Class</a>
+    </div>
+    ${courseFold}
+    ${studentFold}
+    ${expectationFold}
+    ${behaviourFold}
     <section class="card">
       <button type="button" class="danger full-button" data-action="delete-course">Delete ${esc(course.code || course.name)}</button>
     </section>
@@ -1500,11 +1639,11 @@ function renderSetup(course) {
       <button type="button" class="ghost drive-sync save" data-action="drive-backup">${driveIcon()} Manual Save to Google Drive</button>
       <p class="sub sync-time">${esc(lastSyncText())}</p>
     </section>
-    <div class="stack">
+    <section class="card stack" id="backup-panel">
       <h2>BACKUP / RESTORE CLASS DATA</h2>
       <button type="button" class="ghost full-button csv-action" data-action="import">Import Class from CSV File</button>
       <button type="button" class="ghost full-button csv-action" data-action="email-backup">Backup Class to CSV File</button>
-    </div>
+    </section>
   </div>`;
 }
 
@@ -1523,7 +1662,12 @@ function saveCapture(course) {
   }
   let expectationId = capture.expectationId;
   let expectationLabel = "";
-  if (capture.expectationId === "custom") {
+  const behaviourEntry = capture.record === "behaviour";
+  if (behaviourEntry) {
+    const found = knownBehaviour(course, capture.expectationId);
+    expectationId = found?.id || null;
+    expectationLabel = found?.label || "Behaviour";
+  } else if (capture.expectationId === "custom") {
     const text = capture.customText.trim();
     expectationLabel = text;
     if (capture.saveCustom) {
@@ -1553,6 +1697,7 @@ function saveCapture(course) {
     date,
     studentId: capture.studentId,
     kind: capture.kind,
+    record: behaviourEntry ? "behaviour" : "assessment",
     expectationId,
     expectationLabel,
     level: levelFromPercent(capture.percent).id,
@@ -1566,14 +1711,23 @@ function saveCapture(course) {
   } else {
     course.entries.push({ id: uid("ev"), createdAt: new Date().toISOString(), ...payload });
   }
-  ui.stick = { kind: payload.kind, expectationId: expectationId || ui.stick.expectationId };
-  if (expectationId) ui.focus[course.id] = expectationId;
-  else if (ui.focus[course.id] === "custom") ui.focus[course.id] = "";
+  if (behaviourEntry) {
+    ui.stick = { kind: payload.kind, expectationId: expectationId || null, record: "behaviour" };
+    ui.behaviourFocus[course.id] = expectationId || "";
+    ui.focus[course.id] = "";
+  } else {
+    ui.stick = { kind: payload.kind, expectationId: expectationId || ui.stick.expectationId, record: "assessment" };
+    ui.behaviourFocus[course.id] = "";
+    if (expectationId) ui.focus[course.id] = expectationId;
+    else if (ui.focus[course.id] === "custom") ui.focus[course.id] = "";
+  }
   ui.capture = null;
   persist();
-  showToast(`${kindById(payload.kind).label} saved · ${levelById(payload.level).name}`);
+  showToast(`${behaviourEntry ? "Behaviour" : kindById(payload.kind).label} saved · ${levelById(payload.level).name}`);
   warnIfGoogleMissing();
-  const next = hrefFor(course.id);
+  const backToStudent = !capture.entryId && parseRoute().returnTo === "student";
+  if (!capture.entryId && !backToStudent) scrollTilesToTop = true;
+  const next = backToStudent ? studentHref(course.id, capture.studentId) : hrefFor(course.id);
   if ((location.hash || "#/") !== next) location.hash = next;
   else render();
 }
@@ -2031,6 +2185,16 @@ async function onClick(event) {
     setTimeout(() => { loadingExpectations = false; }, 0);
     return;
   }
+  if (action === "load-behaviour-suggestions" && course) {
+    const choice = await chooseListMode("Load Suggested Behaviour Expectations", "Replace the current behaviour expectations, or add these suggestions to the existing list?");
+    if (!choice) return;
+    applySuggestedBehaviours(course, choice);
+    persist();
+    showToast(choice === "add" ? "Suggested behaviour expectations added." : "Suggested behaviour expectations loaded.");
+    warnIfGoogleMissing();
+    render();
+    return;
+  }
   if (action === "erase-all") {
     const ok = await confirmAction("Erase every course stored in this browser?", "Erase");
     if (!ok) return;
@@ -2051,6 +2215,11 @@ async function onClick(event) {
   }
   if (action === "save-expectation-list") {
     const saved = syncExpectationList(course, document.getElementById("expectation-list")?.value || "");
+    if (saved === false) showToast("Saved.");
+    return;
+  }
+  if (action === "save-behaviour-list") {
+    const saved = syncBehaviourList(course, document.getElementById("behaviour-list")?.value || "");
     if (saved === false) showToast("Saved.");
     return;
   }
@@ -2166,27 +2335,30 @@ async function onClick(event) {
   }
   if (action === "save-checkpoint") {
     const studentId = target.dataset.student;
-    const name = document.getElementById("checkpoint-name")?.value.trim() || "";
+    const picked = document.getElementById("checkpoint-name")?.value || "";
+    const custom = document.getElementById("checkpoint-custom")?.value.trim() || "";
+    const name = picked === "custom" ? custom : picked;
     if (!name) {
-      showToast("Name the checkpoint.");
+      showToast(picked === "custom" ? "Name the checkpoint." : "Choose a checkpoint.");
       return;
     }
     const record = ensureMark(course, studentId);
-    const entries = course.entries.filter((entry) => entry.studentId === studentId);
+    const entries = course.entries.filter((entry) => entry.studentId === studentId && !isBehaviourEntry(entry));
     const average = averageLevel(entries);
-    const choice = chosenMark(record, average);
+    const chosen = chosenMark(record, average);
     if (!record.checkpoints) record.checkpoints = [];
     record.checkpoints.unshift({
       id: uid("chk"),
       name,
       date: todayISO(),
       average,
-      levelValue: choice.level ? Number(choice.level.id) : average,
-      percent: choice.percent,
+      levelValue: chosen.level ? Number(chosen.level.id) : average,
+      percent: chosen.percent,
       note: record.comment || "",
       count: entries.length,
       createdAt: new Date().toISOString(),
     });
+    delete ui.checkpointDraft[studentId];
     persist();
     showToast(`Checkpoint saved: ${name}.`);
     warnIfGoogleMissing();
@@ -2309,9 +2481,52 @@ function syncExpectationList(course, text, options = {}) {
   }));
   course.expectationsManaged = true;
   if (ui.focus[course.id] !== "custom" && !course.expectations.some((item) => item.id === ui.focus[course.id])) ui.focus[course.id] = "";
-  if (ui.stick.expectationId && !course.expectations.some((item) => item.id === ui.stick.expectationId)) ui.stick.expectationId = null;
+  if (ui.stick.record !== "behaviour" && ui.stick.expectationId && !course.expectations.some((item) => item.id === ui.stick.expectationId)) ui.stick.expectationId = null;
   persist();
   showToast("Expectation list saved.");
+  warnIfGoogleMissing();
+  if (options.render !== false) render();
+  return true;
+}
+
+function syncBehaviourList(course, text, options = {}) {
+  const lines = String(text || "")
+    .split("\n")
+    .map((line) => line.trim().replace(/\s+/g, " "))
+    .filter(Boolean);
+  const current = course.behaviourExpectations || [];
+  if (lines.join("\n") === current.map((item) => item.label).join("\n")) return false;
+  const used = new Set();
+  const assigned = lines.map((line) => {
+    const found = current.find((item) => !used.has(item.id) && item.label.toLowerCase() === line.toLowerCase());
+    if (!found) return null;
+    used.add(found.id);
+    return found;
+  });
+  const openLines = assigned.flatMap((item, index) => (item ? [] : [index]));
+  const openItems = current.filter((item) => !used.has(item.id));
+  const pairCount = Math.min(openLines.length, openItems.length);
+  for (let index = 0; index < pairCount; index += 1) {
+    const item = openItems[index];
+    item.label = lines[openLines[index]];
+    item.detail = item.label;
+    assigned[openLines[index]] = item;
+    used.add(item.id);
+  }
+  for (let index = pairCount; index < openLines.length; index += 1) {
+    const label = lines[openLines[index]];
+    assigned[openLines[index]] = { id: uid("beh"), label, detail: label, group: "" };
+  }
+  course.behaviourExpectations = assigned.filter(Boolean).map((item) => ({
+    id: item.id,
+    label: item.label,
+    detail: item.detail || item.label,
+    group: item.group || "",
+  }));
+  if (ui.behaviourFocus[course.id] && !course.behaviourExpectations.some((item) => item.id === ui.behaviourFocus[course.id])) ui.behaviourFocus[course.id] = "";
+  if (ui.stick.record === "behaviour" && ui.stick.expectationId && !course.behaviourExpectations.some((item) => item.id === ui.stick.expectationId)) ui.stick.expectationId = null;
+  persist();
+  showToast("Behaviour expectation list saved.");
   warnIfGoogleMissing();
   if (options.render !== false) render();
   return true;
@@ -2422,11 +2637,30 @@ function onChange(event) {
   }
   if (target.id === "focus-expectation" && course) {
     ui.focus[course.id] = target.value;
+    if (target.value) ui.behaviourFocus[course.id] = "";
+    render();
+    return;
+  }
+  if (target.id === "focus-behaviour" && course) {
+    ui.behaviourFocus[course.id] = target.value;
+    if (target.value) ui.focus[course.id] = "";
     render();
     return;
   }
   if (target.id === "expectation-select" && ui.capture) {
-    ui.capture.expectationId = target.value || null;
+    if (target.value) {
+      ui.capture.record = "assessment";
+      ui.capture.expectationId = target.value;
+    } else if (ui.capture.record !== "behaviour") ui.capture.expectationId = null;
+    render();
+    return;
+  }
+  if (target.id === "behaviour-select" && ui.capture) {
+    if (target.value) {
+      ui.capture.record = "behaviour";
+      ui.capture.expectationId = target.value;
+      ui.capture.customText = "";
+    } else if (ui.capture.record === "behaviour") ui.capture.expectationId = null;
     render();
     return;
   }
@@ -2487,6 +2721,11 @@ function onChange(event) {
   if (target.id === "expectation-list" && course) {
     if (loadingExpectations || !target.isConnected) return;
     syncExpectationList(course, target.value, { render: true });
+    return;
+  }
+  if (target.id === "behaviour-list" && course) {
+    if (!target.isConnected) return;
+    syncBehaviourList(course, target.value, { render: true });
     return;
   }
   if (target.id === "class-topic" && course) {
@@ -2550,6 +2789,11 @@ function onChange(event) {
     render();
     return;
   }
+  if (target.id === "checkpoint-name") {
+    checkpointDraft(target.dataset.student).choice = target.value;
+    render();
+    return;
+  }
   if (target.id === "mark-comment") {
     ensureMark(course, target.dataset.student).comment = target.value;
     persist();
@@ -2559,6 +2803,11 @@ function onChange(event) {
 
 function onInput(event) {
   const target = event.target;
+  if (target.id === "checkpoint-custom") {
+    const studentId = document.getElementById("checkpoint-name")?.dataset.student;
+    if (studentId) checkpointDraft(studentId).custom = target.value;
+    return;
+  }
   if (target.id === "percent-slider") {
     const readout = document.getElementById("percent-readout");
     if (readout) readout.textContent = `${Math.round(Number(target.value))}%`;
@@ -2712,6 +2961,24 @@ function onPointerUp(event) {
   render();
 }
 
+function onSetupFold(event) {
+  const fold = event.target;
+  if (!(fold instanceof HTMLDetailsElement)) return;
+  if (fold.dataset.entries) {
+    ui.entriesOpen[fold.dataset.entries] = fold.open;
+    return;
+  }
+  if (!fold.dataset.fold) return;
+  if (!fold.open) {
+    ui.setupOpen[fold.dataset.fold] = false;
+    return;
+  }
+  ui.setupOpen = { [fold.dataset.fold]: true };
+  fold.parentElement?.querySelectorAll(".setup-fold").forEach((other) => {
+    if (other !== fold) other.open = false;
+  });
+}
+
 function onFocusOut(event) {
   const target = event.target;
   if (target?.id === "class-switch") showClassCode(target);
@@ -2733,6 +3000,7 @@ function start() {
   appEl.addEventListener("input", onInput);
   appEl.addEventListener("focusout", onFocusOut);
   appEl.addEventListener("keydown", onClassSwitchKey);
+  appEl.addEventListener("toggle", onSetupFold, true);
   appEl.addEventListener("pointerdown", onPointerDown);
   appEl.addEventListener("pointermove", onPointerMove);
   appEl.addEventListener("pointerup", onPointerUp);

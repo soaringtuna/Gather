@@ -97,20 +97,19 @@ export function parseStudentLine(line) {
   return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
 }
 
+export function isBehaviourEntry(entry) {
+  return entry?.record === "behaviour";
+}
+
 export function entriesForStudent(course, studentId) {
   return course.entries
     .filter((entry) => entry.studentId === studentId)
     .sort((a, b) => (b.date || "").localeCompare(a.date || "") || (b.createdAt || "").localeCompare(a.createdAt || ""));
 }
 
-export function summarizeStudent(course, student) {
-  const entries = entriesForStudent(course, student.id);
-  const byLevel = { 4: 0, 3: 0, 2: 0, 1: 0, 0: 0 };
-  const counts = { conversation: 0, observation: 0 };
+function groupEntries(entries) {
   const grouped = new Map();
   for (const entry of entries) {
-    if (byLevel[entry.level] != null) byLevel[entry.level] += 1;
-    if (counts[entry.kind] != null) counts[entry.kind] += 1;
     const key = entry.expectationId || `custom:${entry.expectationLabel}`;
     if (!grouped.has(key)) grouped.set(key, { label: entry.expectationLabel, count: 0, levels: [] });
     const bucket = grouped.get(key);
@@ -118,11 +117,27 @@ export function summarizeStudent(course, student) {
     bucket.levels.push(entry.level);
     bucket.label = entry.expectationLabel || bucket.label;
   }
+  return [...grouped.values()];
+}
+
+export function summarizeStudent(course, student) {
+  const entries = entriesForStudent(course, student.id);
+  const assessment = entries.filter((entry) => !isBehaviourEntry(entry));
+  const behaviour = entries.filter((entry) => isBehaviourEntry(entry));
+  const byLevel = { 4: 0, 3: 0, 2: 0, 1: 0, 0: 0 };
+  const counts = { conversation: 0, observation: 0 };
+  for (const entry of assessment) {
+    if (byLevel[entry.level] != null) byLevel[entry.level] += 1;
+    if (counts[entry.kind] != null) counts[entry.kind] += 1;
+  }
   return {
     entries,
+    assessment,
+    behaviour,
     byLevel,
     counts,
-    expectations: [...grouped.values()],
+    expectations: groupEntries(assessment),
+    behaviours: groupEntries(behaviour),
     mark: course.marks?.[student.id] || null,
   };
 }

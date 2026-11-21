@@ -45,6 +45,7 @@ const COLUMNS = [
   "expectationsManaged",
   "expectationGroup",
   "curriculumCitation",
+  "record",
 ];
 
 function cell(value) {
@@ -118,6 +119,16 @@ export function stateToCsv(state) {
         expectationGroup: item.group || "",
       }));
     }
+    for (const item of course.behaviourExpectations || []) {
+      lines.push(row({
+        type: "behaviour",
+        courseId: course.id,
+        expectationId: item.id,
+        expectationLabel: item.label,
+        expectationDetail: item.detail,
+        expectationGroup: item.group || "",
+      }));
+    }
     for (const session of course.sessions || []) {
       lines.push(row({
         type: "session",
@@ -138,6 +149,7 @@ export function stateToCsv(state) {
         expectationLabel: entry.expectationLabel,
         entryId: entry.id,
         kind: entry.kind,
+        record: entry.record === "behaviour" ? "behaviour" : "assessment",
         level: entry.level,
         percent: entry.percent,
         note: entry.note || "",
@@ -236,6 +248,7 @@ export function stateFromCsv(text) {
         weekStart: "",
         students: [],
         expectations: [],
+        behaviourExpectations: [],
         sessions: [],
         entries: [],
         marks: {},
@@ -277,6 +290,13 @@ export function stateFromCsv(text) {
         detail: value(record, "expectationDetail"),
         group: value(record, "expectationGroup"),
       });
+    } else if (type === "behaviour") {
+      course.behaviourExpectations.push({
+        id: value(record, "expectationId"),
+        label: value(record, "expectationLabel"),
+        detail: value(record, "expectationDetail"),
+        group: value(record, "expectationGroup"),
+      });
     } else if (type === "session") {
       course.sessions.push({
         id: value(record, "sessionId"),
@@ -290,6 +310,7 @@ export function stateFromCsv(text) {
         date: value(record, "date"),
         studentId: value(record, "studentId"),
         kind: value(record, "kind"),
+        record: value(record, "record") === "behaviour" ? "behaviour" : "assessment",
         expectationId: value(record, "expectationId") || null,
         expectationLabel: value(record, "expectationLabel"),
         level: value(record, "level"),
