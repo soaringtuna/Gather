@@ -641,14 +641,14 @@ function fitSeatTiles() {
 }
 
 function brandBanner() {
-  return `<div class="brand-banner"><img src="img/gathered-logo.jpg?v=4" alt="GATHERED. Let's get it together." /></div>`;
+  return `<div class="brand-banner"><img src="img/gathered-logo.jpg?v=5" alt="GATHERED. Getting it together." /></div>`;
 }
 
 function classSwitcher(course) {
   const options = db.courses
     .map((item) => `<option value="${esc(item.id)}" ${course && item.id === course.id ? "selected" : ""}>${esc(item.code || "Class")} — ${esc(item.name)}${item.sample ? " (sample)" : ""}</option>`)
     .join("");
-  if (!db.courses.length) return `<p class="sub class-empty">No classes yet.</p>`;
+  if (!db.courses.length) return "";
   return `<div class="class-pick"><select id="class-switch" aria-label="Class">${options}</select></div>`;
 }
 
@@ -672,16 +672,17 @@ function shell(route, course, body) {
     ? ""
     : route.name === "new"
       ? "Pick the Ontario course code. Expectations for that code load into the class."
-      : "Choose the active class above. Several classes can stay on this device.";
-  const title = heading ? `<div class="course-heading"><h1>${heading}</h1><p class="lede">${lede}</p></div>` : "";
+      : db.courses.length
+        ? "Choose the active class above. Several classes can stay on this device."
+        : "";
+  const title = heading ? `<div class="course-heading"><h1>${heading}</h1>${lede ? `<p class="lede">${lede}</p>` : ""}</div>` : "";
+  const switcher = classSwitcher(course);
+  const header = switcher || courseLede
+    ? `<header class="appbar"><div class="class-panel">${switcher}${courseLede ? `<p class="lede course-lede">${courseLede}</p>` : ""}</div></header>`
+    : "";
   return `<div class="shell ${capturing ? "is-capture" : ""}">
     ${brandBanner()}
-    <header class="appbar">
-      <div class="class-panel">
-        ${classSwitcher(course)}
-        ${courseLede ? `<p class="lede course-lede">${courseLede}</p>` : ""}
-      </div>
-    </header>
+    ${header}
     <div class="main">
       ${capturing ? "" : `<div class="topbar">${title}${tabs}</div>`}
       <div id="main" tabindex="-1">${body}</div>
@@ -697,7 +698,7 @@ function tab(course, page, label, route) {
 
 function renderHome() {
   if (!db.courses.length) {
-    return `<section class="card"><h2>Start With One Class</h2><p>Add a class, pick its Ontario course code, then tap students as you walk the room.</p><p><a class="primary" href="#/new" style="display:inline-block;text-decoration:none">Create A Class</a></p></section>`;
+    return `<section class="card"><p>Start by adding a class.</p><p><a class="primary" href="#/new" style="display:inline-block;text-decoration:none">Create A Class</a></p></section>`;
   }
   return `<section class="card"><h2>Choose A Class</h2><p>Use the active class list at the top. Each class keeps its own students, seating plan, and entries.</p></section>`;
 }
@@ -875,7 +876,7 @@ function renderClass(course) {
         <label class="field">Week Of<input id="week-start" type="date" value="${esc(weekStart)}" /></label>
         <label class="field week-goal">Weekly Goal<select id="weekly-target">${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((count) => `<option value="${count}" ${count === target ? "selected" : ""}>${count}</option>`).join("")}</select></label>
       </div>
-      <p class="week-note">Week Of is the first day of the week being counted, and that week includes the next six days. Choose how many entries each student should have in that week. 0 leaves the tiles white. A chosen goal turns a tile yellow until the student reaches it, then green.</p>
+      <p class="week-note">Week Of is the first day of the week being counted, and that week includes the next six days. Choose how many entries each student should have in that week. 0 leaves the tiles light grey. A chosen goal turns a tile yellow until the student reaches it, then green.</p>
     </section>
   </div>`;
 }
@@ -996,7 +997,7 @@ function renderCapture(course, student) {
     <section class="dock ${capture.touched ? "is-set" : ""}">
       <div class="level-row">${levelButtons}</div>
       <button type="button" class="chip-btn below-btn" data-action="pick-level" data-level="0" aria-pressed="${capture.touched && capture.level === "0"}">Below Level 1 · Under 50%</button>
-      <button id="save-entry" class="save-bar" type="submit" ${ready ? "" : "disabled"}>${esc(saveLabel)}</button>
+      <button id="save-entry" class="save-bar save" type="submit" ${ready ? "" : "disabled"}>${esc(saveLabel)}</button>
     </section>
   </form>`;
 }
@@ -1384,7 +1385,7 @@ function renderStudent(course, student) {
       <p class="sub">Save a snapshot for a report, such as a midterm. It keeps the average, the level, the percentage, and the notes as they are now.</p>
       <div class="row checkpoint-save">
         <label class="field">Checkpoint<input id="checkpoint-name" list="checkpoint-names" placeholder="Midterm Report" data-student="${esc(student.id)}" /></label>
-        <button type="button" class="primary" data-action="save-checkpoint" data-student="${esc(student.id)}">Save Checkpoint</button>
+        <button type="button" class="primary save" data-action="save-checkpoint" data-student="${esc(student.id)}">Save Checkpoint</button>
       </div>
       <datalist id="checkpoint-names">
         <option value="Progress report"></option>
@@ -1413,7 +1414,7 @@ function renderSetup(course) {
   return `<div class="stack">
     <div class="stack noprint setup-actions">
       <a class="primary setup-add" href="#/new">Create New Class</a>
-      <button type="button" class="ghost drive-sync" data-action="drive-backup">${driveIcon()} Manual Save to Google Drive</button>
+      <button type="button" class="ghost drive-sync save" data-action="drive-backup">${driveIcon()} Manual Save to Google Drive</button>
       <p class="sub sync-time" id="last-sync">${esc(lastSyncText())}</p>
     </div>
     <form class="card form-grid" data-action="save-course">
@@ -1424,7 +1425,7 @@ function renderSetup(course) {
       <label class="field">Semester<input name="semester" type="text" value="${esc(course.semesterLabel)}" /></label>
       ${periodField(course.period)}
       <div class="span-2">
-        <button class="primary full-button" type="submit">Save Course Details</button>
+        <button class="primary full-button save" type="submit">Save Course Details</button>
       </div>
     </form>
     <section class="card stack">
@@ -1435,12 +1436,12 @@ function renderSetup(course) {
       <button type="button" class="primary full-button" data-action="reload-expectations">Load Expectations From Curriculum</button>
       <button type="button" class="primary full-button" data-action="load-learning-skills">Load Learning Skills</button>
       <textarea id="expectation-list" aria-label="Expectations For This Class, One Per Line" rows="${Math.max(8, loadedExpectations(course).length + 1)}" spellcheck="false">${esc(loadedExpectations(course).map((item) => item.label).join("\n"))}</textarea>
-      <button type="button" class="primary" data-action="save-expectation-list">Save Expectation List</button>
+      <button type="button" class="primary save" data-action="save-expectation-list">Save Expectation List</button>
     </section>
     <section class="card stack">
       <h2>STUDENT LIST (<span class="course-code-mark">${esc(course.code)}</span>)</h2>
       <textarea id="student-list" aria-label="Students, One Name Per Line" rows="${Math.max(8, sortedStudents(course).length + 1)}" spellcheck="false">${esc(studentLines)}</textarea>
-      <button type="button" class="primary" data-action="save-student-list">Save Student List</button>
+      <button type="button" class="primary save" data-action="save-student-list">Save Student List</button>
       <p class="sub">One student per line. Change a name, add a line, or delete a line, then press Save Student List.</p>
     </section>
     <section class="card">
@@ -1476,7 +1477,7 @@ function renderGuide() {
         <li>Add Note and Add Photo are optional.</li>
         <li>Tiles show initials. Drag a tile to move that student. Cols and Rows set the grid. Empty seats stay empty.</li>
         <li>The left number is entries this week. The right number is the total.</li>
-        <li>Set Week Of and Weekly Goal from 0 to 10. The week is that date plus the next six days. 0 leaves tiles white. A goal turns a tile yellow until it is met, then green.</li>
+        <li>Set Week Of and Weekly Goal from 0 to 10. The week is that date plus the next six days. 0 leaves tiles light grey. A goal turns a tile yellow until it is met, then green.</li>
         <li>Level 4 is 80–100%, Level 3 is 70–79%, Level 2 is 60–69%, Level 1 is 50–59%, and below Level 1 is under 50%. A level button records the midpoint. Attendance is not tracked.</li>
       </ul>
     </details>

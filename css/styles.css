@@ -20,6 +20,7 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; }
+#app { width: 100%; max-width: 800px; margin: 0 auto; }
 body {
   min-height: 100vh;
   background: var(--paper);
@@ -255,6 +256,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   overflow: hidden;
   color: inherit;
   touch-action: none;
+  background: var(--paper-2);
 }
 .tile[data-student] { cursor: grab; }
 .tile a {
@@ -268,7 +270,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   text-decoration: none;
   overflow: hidden;
 }
-.tile:hover { border-color: #c5c9d1; background: #fafbfc; }
+.tile:hover { border-color: #c5c9d1; background: #d8dbe2; }
 .tile.is-short { background: #facc15; }
 .tile.is-short:hover { background: #eab308; }
 .tile.is-met { background: var(--level-4); color: white; }
@@ -351,6 +353,9 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .level-btn[aria-pressed="true"] { color: white; border-color: transparent; }
 .level-btn[aria-pressed="true"] small { color: rgba(255, 255, 255, 0.86); }
 .primary:disabled:hover, .save-bar:disabled:hover { background: var(--ink); }
+.save,
+.save:hover,
+.save:disabled:hover { background: var(--level-0); color: white; border: 0; }
 .level-btn[data-level="4"][aria-pressed="true"] { background: var(--level-4); }
 .level-btn[data-level="3"][aria-pressed="true"] { background: var(--level-3); }
 .level-btn[data-level="2"][aria-pressed="true"] { background: #facc15; color: #121417; }
