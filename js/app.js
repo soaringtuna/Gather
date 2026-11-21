@@ -107,8 +107,10 @@ function lastSyncText() {
 
 function noteDriveSync() {
   localStorage.setItem("class-record-google-synced-at", new Date().toISOString());
-  const line = document.getElementById("last-sync");
-  if (line) line.textContent = lastSyncText();
+  const text = lastSyncText();
+  document.querySelectorAll(".sync-time").forEach((line) => {
+    line.textContent = text;
+  });
 }
 
 function scheduleDriveSync() {
@@ -1454,8 +1456,7 @@ function renderSetup(course) {
   return `<div class="stack">
     <div class="stack noprint setup-actions">
       <a class="primary setup-add" href="#/new">Create New Class</a>
-      <button type="button" class="ghost drive-sync save" data-action="drive-backup">${driveIcon()} Manual Save to Google Drive</button>
-      <p class="sub sync-time" id="last-sync">${esc(lastSyncText())}</p>
+      <p class="sub sync-time">${esc(lastSyncText())}</p>
     </div>
     <form class="card form-grid" data-action="save-course">
       <h2 class="span-2">COURSE DETAILS</h2>
@@ -1496,6 +1497,8 @@ function renderSetup(course) {
         <button type="button" class="primary" data-action="select-drive-folder">Select Drive Folder</button>
       </div>
       <div id="drive-browser"></div>
+      <button type="button" class="ghost drive-sync save" data-action="drive-backup">${driveIcon()} Manual Save to Google Drive</button>
+      <p class="sub sync-time">${esc(lastSyncText())}</p>
     </section>
     <div class="stack">
       <h2>BACKUP / RESTORE CLASS DATA</h2>
