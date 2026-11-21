@@ -643,9 +643,51 @@ function brandBanner() {
   return `<div class="brand-banner"><img src="img/gathered-logo.jpg?v=5" alt="GATHERED. Getting it together." /></div>`;
 }
 
+function courseSwitchText(item, full) {
+  const code = item.code || "Class";
+  const period = item.period ? `Period ${item.period}` : "No Period";
+  if (!full) return `${period} · ${code}`;
+  return `${period} · ${code} — ${item.name}${item.sample ? " (sample)" : ""}`;
+}
+
+function showClassMenu(select) {
+  if (!select || select.id !== "class-switch") return;
+  select.classList.add("is-open");
+  [...select.options].forEach((option) => {
+    option.textContent = option.dataset.full || option.textContent;
+  });
+}
+
+function showClassCode(select) {
+  if (!select || select.id !== "class-switch") return;
+  select.classList.remove("is-open");
+  [...select.options].forEach((option) => {
+    option.textContent = option.selected ? (option.dataset.short || option.textContent) : (option.dataset.full || option.textContent);
+  });
+}
+
+function classSwitchCourses() {
+  return db.courses
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => {
+      const rank = (course) => {
+        const period = periodValue(course.period);
+        return period ? Number(period) : 6;
+      };
+      return rank(a.item) - rank(b.item) || a.index - b.index;
+    })
+    .map((entry) => entry.item);
+}
+
 function classSwitcher(course) {
-  const options = db.courses
-    .map((item) => `<option value="${esc(item.id)}" ${course && item.id === course.id ? "selected" : ""}>${esc(item.code || "Class")} — ${esc(item.name)}${item.sample ? " (sample)" : ""}</option>`)
+  const activeId = course?.id || db.lastCourseId || db.courses[0]?.id;
+  const options = classSwitchCourses()
+    .map((item) => {
+      const selected = item.id === activeId;
+      const short = courseSwitchText(item, false);
+      const full = courseSwitchText(item, true);
+      return `<option value="${esc(item.id)}" data-short="${esc(short)}" data-full="${esc(full)}" ${selected ? "selected" : ""}>${esc(selected ? short : full)}</option>`;
+    })
     .join("");
   if (!db.courses.length) return "";
   return `<div class="class-pick"><select id="class-switch" aria-label="Class">${options}</select></div>`;
@@ -739,6 +781,11 @@ function gradeOptions(selected) {
   return [9, 10, 11, 12].map((item) => `<option ${item === grade ? "selected" : ""}>${item}</option>`).join("");
 }
 
+function newClassCancelHref() {
+  const course = courseById(db.lastCourseId);
+  return course ? hrefFor(course.id, "setup") : "#/";
+}
+
 function renderNewCourse() {
   const selected = ui.draftCode;
   const catalogue = findOntarioCourse(selected);
@@ -749,7 +796,7 @@ function renderNewCourse() {
     <label class="field">Semester<input name="semester" type="text" value="Semester 1, 2026–27" /></label>
     ${periodField("")}
     <label class="field span-2">Students, One Per Line<textarea name="students" placeholder="Add your Students (or do this later...)"></textarea></label>
-    <div class="span-2"><button class="primary" type="submit">Create Class</button></div>
+    <div class="span-2 form-actions"><a class="ghost" href="${esc(newClassCancelHref())}">Cancel</a><button class="primary" type="submit">Create Class</button></div>
   </form>`;
 }
 
@@ -2364,6 +2411,7 @@ function onChange(event) {
     return;
   }
   if (target.id === "class-switch") {
+    showClassCode(target);
     const nextId = target.value;
     if (!nextId || nextId === route.courseId) return;
     location.hash = hrefFor(nextId, tabName(route) || keptTab);
@@ -2590,7 +2638,18 @@ async function onImport(event) {
   }
 }
 
+function onClassSwitchKey(event) {
+  const target = event.target;
+  if (target?.id !== "class-switch") return;
+  if (event.key === "Escape") {
+    showClassCode(target);
+    return;
+  }
+  if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Enter" || event.key === " ") showClassMenu(target);
+}
+
 function onPointerDown(event) {
+  if (event.target?.id === "class-switch") showClassMenu(event.target);
   if (event.button != null && event.button !== 0) return;
   const load = event.target.closest?.("[data-action='reload-expectations'], [data-action='load-learning-skills']");
   if (load) {
@@ -2652,6 +2711,7 @@ function onPointerUp(event) {
 
 function onFocusOut(event) {
   const target = event.target;
+  if (target?.id === "class-switch") showClassCode(target);
   if (target?.id !== "student-list") return;
   if (event.relatedTarget?.closest?.("[data-action='save-student-list']")) return;
   const course = courseById(parseRoute().courseId);
@@ -2669,6 +2729,7 @@ function start() {
   appEl.addEventListener("change", onChange);
   appEl.addEventListener("input", onInput);
   appEl.addEventListener("focusout", onFocusOut);
+  appEl.addEventListener("keydown", onClassSwitchKey);
   appEl.addEventListener("pointerdown", onPointerDown);
   appEl.addEventListener("pointermove", onPointerMove);
   appEl.addEventListener("pointerup", onPointerUp);
