@@ -782,15 +782,7 @@ function classSwitcher(course) {
 
 function shell(route, course, body) {
   const capturing = route.name === "capture";
-  const tabs = course && !capturing
-    ? `<nav class="tabs" aria-label="Course">
-        ${tab(course, "class", "NEW ENTRY", route)}
-        <div class="tab-row">
-          ${tab(course, "roster", "COLLECTED EVIDENCE", route)}
-          ${tab(course, "setup", "CLASS SETUP", route)}
-        </div>
-      </nav>`
-    : "";
+  const tabs = course && !capturing ? pageSwitch(course, route) : "";
   const heading = course ? "" : route.name === "new" ? "New Class" : "Classes";
   const courseLede = course
     ? `${esc(course.semesterLabel || "Semester Not Set")} · Grade ${course.grade}${course.period ? ` · Period ${esc(course.period)}` : ""}`
@@ -817,10 +809,20 @@ function shell(route, course, body) {
   </div>`;
 }
 
-function tab(course, page, label, route) {
-  const on = route.name === page || (page === "roster" && route.name === "student") || (page === "class" && route.name === "capture");
-  const mark = page === "class" ? ` class="tab-entry"` : "";
-  return `<a href="${hrefFor(course.id, page)}"${mark} ${on ? `aria-current="page"` : ""}>${label}</a>`;
+function pageSwitch(course, route) {
+  const current = route.name === "student" ? "roster" : route.name;
+  const pages = [
+    ["class", "NEW ENTRY", "page-entry"],
+    ["roster", "COLLECTED EVIDENCE", "page-evidence"],
+    ["setup", "CLASS SETUP", "page-setup"],
+  ];
+  const active = pages.find(([page]) => page === current) || pages[0];
+  const items = pages
+    .filter(([page]) => page !== current)
+    .map(([page, label, tone]) => `<a class="${tone}" href="${hrefFor(course.id, page)}">${label}</a>`)
+    .join("");
+  const hint = active[0] === "class" ? `<p class="page-hint">Choose an expectation, tap a student tile.</p>` : "";
+  return `<nav class="tabs" aria-label="Course"><details class="page-drop"><summary class="${active[2]}">${active[1]}</summary>${items}</details>${hint}</nav>`;
 }
 
 function renderHome() {
@@ -1007,7 +1009,7 @@ function renderClass(course) {
         <label class="field">Week Of<input id="week-start" type="date" value="${esc(weekStart)}" /></label>
         <label class="field week-goal">Weekly Goal<input id="weekly-target" type="range" min="0" max="10" step="1" value="${target}" /><output id="weekly-target-value" for="weekly-target">${target}</output></label>
       </div>
-      <p class="week-note">Week Of is the first day of the week period. Choose your entries per student goal for the week. 0 leaves the tiles light grey. A chosen goal turns a tile yellow until goal is achieved for each student. Green tiles have met the weekly goal.</p>
+      <p class="week-note">This section sets a goal of number of entries per student for your class. Week Of is the first day of the week for which the goal is set. Choose your entries per student goal for the week. A value of 0 means no goal. Tiles remain light grey. A numerical goal turns a student tile yellow until the goal is achieved for that student, then turns the tile green. <strong>This is an easy way of ensuring you get data for every student in your class each week.</strong></p>
     </section>
   </div>`;
 }
