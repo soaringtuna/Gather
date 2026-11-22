@@ -223,6 +223,7 @@ h2 { font-size: 1.05rem; }
   transform: translateY(-70%) rotate(45deg);
 }
 .page-drop[open] summary::after { transform: translateY(-30%) rotate(225deg); }
+.page-drop[open] { padding-bottom: 32px; }
 .page-drop:not([open]) > a { display: none; }
 .page-hint { margin: 18px 0 0; text-align: center; color: var(--ink); font-weight: 700; }
 .page-drop a {

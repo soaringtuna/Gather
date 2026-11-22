@@ -850,8 +850,8 @@ function shell(route, course, body) {
 function pageSwitch(course, route) {
   const current = route.name === "student" ? "roster" : route.name;
   const pages = [
-    ["class", "NEW ENTRY", "page-entry"],
-    ["roster", "COLLECTED EVIDENCE", "page-evidence"],
+    ["class", "DATA ENTRY", "page-entry"],
+    ["roster", "GATHERED EVIDENCE", "page-evidence"],
     ["setup", "CLASS SETUP", "page-setup"],
   ];
   const active = pages.find(([page]) => page === current) || pages[0];
