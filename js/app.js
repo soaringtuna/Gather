@@ -770,8 +770,9 @@ function brandBanner() {
 function courseSwitchText(item, full) {
   const code = item.code || "Class";
   const period = item.period ? `Period ${item.period}` : "No Period";
-  if (!full) return `${period} · ${code}`;
-  return `${period} · ${code} — ${item.name}${item.sample ? " (sample)" : ""}`;
+  const sample = item.sample ? " (Sample)" : "";
+  if (!full) return `${period} · ${code}${sample}`;
+  return `${period} · ${code} — ${item.name}${sample}`;
 }
 
 function showClassMenu(select) {
@@ -1656,14 +1657,12 @@ function renderSetup(course) {
       <textarea id="behaviour-list" aria-label="Behaviour Expectations, One Per Line" rows="${Math.max(8, (course.behaviourExpectations || []).length + 1)}" spellcheck="false">${esc(behaviourLines)}</textarea>
       <button type="button" class="primary save" data-action="save-behaviour-list">Save Behaviour Expectation List</button>`);
   return `<div class="stack">
-    <div class="stack noprint setup-actions">
-      <a class="primary setup-add" href="#/new">Create New Class</a>
-    </div>
     ${courseFold}
     ${studentFold}
     ${expectationFold}
     ${behaviourFold}
-    <section class="card">
+    <section class="card stack">
+      <a class="primary setup-add noprint" href="#/new">Create a New Class</a>
       <button type="button" class="danger full-button" data-action="delete-course">Delete ${esc(course.code || course.name)}</button>
     </section>
     <section class="card stack" id="google-panel">
