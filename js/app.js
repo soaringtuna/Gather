@@ -623,8 +623,45 @@ function customExpectationFields({ text, saveCustom, textId, checkId }) {
     <label class="field check"><span><input id="${checkId}" type="checkbox" ${saveCustom ? "checked" : ""}/> Add This Custom Expectation To The List.</span></label>`;
 }
 
+function ensureStarterCourse() {
+  if (db.courses.length) return courseById(db.lastCourseId) || db.courses[0];
+  const students = [
+    ["Maya", "Chen"],
+    ["Omar", "Hassan"],
+    ["Priya", "Singh"],
+    ["Noah", "Bennett"],
+    ["Sofia", "Alvarez"],
+    ["Ethan", "Brooks"],
+  ].map(([firstName, lastName], seat) => ({ id: uid("stu"), firstName, lastName, preferredName: "", seat }));
+  const course = normalizeCourse({
+    id: uid("course"),
+    name: "sample class",
+    code: "TAS1O",
+    grade: 9,
+    semesterLabel: "",
+    period: "1",
+    sample: true,
+    students,
+    expectations: [],
+    expectationsManaged: true,
+    behaviourExpectations: [],
+    sessions: [],
+    entries: [],
+    marks: {},
+  });
+  applyLearningSkills(course, "replace", []);
+  db.courses.push(course);
+  db.lastCourseId = course.id;
+  persist();
+  return course;
+}
+
 function render() {
   const route = parseRoute();
+  if (!db.courses.length && (route.name === "home" || route.name === "new")) {
+    location.hash = hrefFor(ensureStarterCourse().id, "setup");
+    return;
+  }
   const tab = tabName(route);
   if (tab) keptTab = tab;
   if (route.courseId && db.lastCourseId !== route.courseId) {
@@ -2201,10 +2238,11 @@ async function onClick(event) {
     const ok = await confirmAction("Erase every course stored in this browser?", "Erase");
     if (!ok) return;
     db = emptyState();
-    persist();
-    if ((location.hash || "#/") !== "#/") location.hash = "#/";
-    else render();
+    const course = ensureStarterCourse();
     showToast("Browser record erased.");
+    const next = hrefFor(course.id, "setup");
+    if ((location.hash || "#/") !== next) location.hash = next;
+    else render();
     return;
   }
   if (!course) return;
@@ -2288,8 +2326,13 @@ async function onClick(event) {
     if (!ok) return;
     db.courses = db.courses.filter((item) => item.id !== course.id);
     db.lastCourseId = db.courses[0]?.id || null;
-    persist();
-    location.hash = db.lastCourseId ? hrefFor(db.lastCourseId, keptTab) : "#/";
+    if (!db.lastCourseId) {
+      const starter = ensureStarterCourse();
+      location.hash = hrefFor(starter.id, "setup");
+    } else {
+      persist();
+      location.hash = hrefFor(db.lastCourseId, keptTab);
+    }
     showToast("Course deleted.");
     return;
   }
@@ -2995,7 +3038,9 @@ function onFocusOut(event) {
 function start() {
   const saved = loadState();
   db = saved || emptyState();
-  if (!saved) persist();
+  const firstLaunch = !db.courses.length;
+  if (firstLaunch) ensureStarterCourse();
+  else if (!saved) persist();
   appEl.addEventListener("click", onClick);
   appEl.addEventListener("submit", onSubmit);
   appEl.addEventListener("change", onChange);
@@ -3010,8 +3055,12 @@ function start() {
   importEl.addEventListener("change", onImport);
   window.addEventListener("hashchange", () => render());
   window.addEventListener("resize", () => requestAnimationFrame(fitSeatTiles));
-  if (!location.hash) location.hash = db.lastCourseId ? hrefFor(db.lastCourseId) : "#/";
-  else render();
+  const hash = location.hash || "";
+  const bare = !hash || hash === "#" || hash === "#/";
+  if (bare || (firstLaunch && (hash === "#/new" || hash === "#/new/"))) {
+    const course = courseById(db.lastCourseId) || db.courses[0];
+    location.hash = hrefFor(course.id, firstLaunch ? "setup" : "class");
+  } else render();
   resumeGoogle();
 }
 
