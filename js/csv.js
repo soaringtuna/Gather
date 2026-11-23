@@ -356,3 +356,193 @@ export function stateFromCsv(text) {
   }
   return { courses: [...courses.values()] };
 }
+
+function textKey(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function classKey(course) {
+  const code = textKey(course?.code);
+  if (!code) return "";
+  return `${code}|${textKey(course.period)}|${textKey(course.semesterLabel)}`;
+}
+
+function studentKey(student) {
+  return textKey(`${student?.firstName || ""} ${student?.lastName || ""}`);
+}
+
+function copyList(list) {
+  return (Array.isArray(list) ? list : []).map((item) => ({ ...item }));
+}
+
+function remap(value, map) {
+  if (!value) return value || "";
+  return map.get(value) || value;
+}
+
+function mergeStudents(localStudents, remoteStudents) {
+  const students = copyList(localStudents);
+  const idMap = new Map();
+  for (const remote of remoteStudents || []) {
+    const key = studentKey(remote);
+    const existing = students.find((student) => remote.id && student.id === remote.id)
+      || (key ? students.find((student) => studentKey(student) === key) : null);
+    if (existing) {
+      if (remote.id) idMap.set(remote.id, existing.id);
+      if (!existing.preferredName && remote.preferredName) existing.preferredName = remote.preferredName;
+      continue;
+    }
+    const added = { ...remote };
+    students.push(added);
+    if (remote.id || added.id) idMap.set(remote.id || added.id, added.id || remote.id);
+  }
+  return { students, idMap };
+}
+
+function mergeNamedItems(localItems, remoteItems) {
+  const items = copyList(localItems);
+  const idMap = new Map();
+  for (const remote of remoteItems || []) {
+    const label = textKey(remote.label);
+    const existing = items.find((item) => remote.id && item.id === remote.id)
+      || (label ? items.find((item) => textKey(item.label) === label) : null);
+    if (existing) {
+      if (remote.id) idMap.set(remote.id, existing.id);
+      if (!existing.detail && remote.detail) existing.detail = remote.detail;
+      if (!existing.group && remote.group) existing.group = remote.group;
+      continue;
+    }
+    items.push({ ...remote });
+    if (remote.id) idMap.set(remote.id, remote.id);
+  }
+  return { items, idMap };
+}
+
+function mergeSessions(localSessions, remoteSessions) {
+  const sessions = copyList(localSessions);
+  const idMap = new Map();
+  for (const remote of remoteSessions || []) {
+    const key = `${remote.date || ""}|${textKey(remote.topic)}`;
+    const existing = sessions.find((session) => remote.id && session.id === remote.id)
+      || (key !== "|" ? sessions.find((session) => `${session.date || ""}|${textKey(session.topic)}` === key) : null);
+    if (existing) {
+      if (remote.id) idMap.set(remote.id, existing.id);
+      if (!existing.topic && remote.topic) existing.topic = remote.topic;
+      continue;
+    }
+    sessions.push({ ...remote });
+    if (remote.id) idMap.set(remote.id, remote.id);
+  }
+  return { sessions, idMap };
+}
+
+function entryScore(entry) {
+  return String(entry?.note || "").length + (entry?.photo ? 100000 : 0) + (entry?.audio ? 100000 : 0);
+}
+
+function mergeEntry(local, remote) {
+  const primary = entryScore(remote) > entryScore(local) ? remote : local;
+  const other = primary === remote ? local : remote;
+  return {
+    ...primary,
+    note: primary.note || other.note || "",
+    photo: primary.photo || other.photo || "",
+    audio: primary.audio || other.audio || "",
+  };
+}
+
+function mergeMarks(localMarks, remoteMarks, studentMap) {
+  const marks = {};
+  for (const [studentId, mark] of Object.entries(localMarks || {})) {
+    marks[studentId] = { ...mark, checkpoints: copyList(mark?.checkpoints) };
+  }
+  for (const [studentId, mark] of Object.entries(remoteMarks || {})) {
+    const id = remap(studentId, studentMap);
+    const local = marks[id];
+    if (!local) {
+      marks[id] = { ...mark, checkpoints: copyList(mark?.checkpoints) };
+      continue;
+    }
+    if (!local.level && mark?.level) local.level = mark.level;
+    if ((local.percent == null || local.percent === "") && mark?.percent != null && mark.percent !== "") local.percent = mark.percent;
+    if (!local.comment && mark?.comment) local.comment = mark.comment;
+    if (local.levelValue == null && mark?.levelValue != null) local.levelValue = mark.levelValue;
+    const seen = new Set((local.checkpoints || []).map((item) => item.id).filter(Boolean));
+    for (const checkpoint of mark?.checkpoints || []) {
+      if (checkpoint.id && seen.has(checkpoint.id)) {
+        const existing = local.checkpoints.find((item) => item.id === checkpoint.id);
+        if (existing && !existing.note && checkpoint.note) existing.note = checkpoint.note;
+        continue;
+      }
+      local.checkpoints.push({ ...checkpoint });
+      if (checkpoint.id) seen.add(checkpoint.id);
+    }
+  }
+  return marks;
+}
+
+function mergeCourse(local, remote) {
+  const students = mergeStudents(local.students, remote.students);
+  const expectations = mergeNamedItems(local.expectations, remote.expectations);
+  const behaviour = mergeNamedItems(local.behaviourExpectations, remote.behaviourExpectations);
+  const sessions = mergeSessions(local.sessions, remote.sessions);
+  const expectationMap = new Map([...expectations.idMap, ...behaviour.idMap]);
+  const entries = copyList(local.entries);
+  const seen = new Map(entries.filter((entry) => entry.id).map((entry) => [entry.id, entry]));
+  for (const remoteEntry of remote.entries || []) {
+    if (!remoteEntry.id) continue;
+    const entry = {
+      ...remoteEntry,
+      studentId: remap(remoteEntry.studentId, students.idMap),
+      expectationId: remap(remoteEntry.expectationId, expectationMap) || null,
+      sessionId: remap(remoteEntry.sessionId, sessions.idMap),
+    };
+    const existing = seen.get(entry.id);
+    if (!existing) {
+      entries.push(entry);
+      seen.set(entry.id, entry);
+      continue;
+    }
+    const merged = mergeEntry(existing, entry);
+    merged.studentId = existing.studentId || entry.studentId;
+    Object.assign(existing, merged);
+  }
+  return {
+    ...local,
+    gradeLabel: local.gradeLabel || remote.gradeLabel || "",
+    curriculumCitation: local.curriculumCitation || remote.curriculumCitation || "",
+    expectationsManaged: Boolean(local.expectationsManaged || remote.expectationsManaged),
+    students: students.students,
+    expectations: expectations.items,
+    behaviourExpectations: behaviour.items,
+    sessions: sessions.sessions,
+    entries,
+    marks: mergeMarks(local.marks, remote.marks, students.idMap),
+  };
+}
+
+function pairedRemote(localCourses, remoteCourses) {
+  const used = new Set();
+  const pairs = (localCourses || []).map((course) => {
+    const remote = (remoteCourses || []).find((item) => item.id && item.id === course.id && !used.has(item))
+      || (remoteCourses || []).find((item) => {
+        const key = classKey(item);
+        return key && key === classKey(course) && !used.has(item);
+      });
+    if (remote) used.add(remote);
+    return { course, remote };
+  });
+  const extra = (remoteCourses || []).filter((item) => !used.has(item));
+  return { pairs, extra };
+}
+
+export function coursesOnlyInFolder(localCourses, remoteCourses) {
+  return pairedRemote(localCourses, remoteCourses).extra;
+}
+
+export function mergeCourses(localCourses, remoteCourses, { includeNew = true } = {}) {
+  const { pairs, extra } = pairedRemote(localCourses, remoteCourses);
+  const merged = pairs.map(({ course, remote }) => (remote ? mergeCourse(course, remote) : course));
+  if (includeNew) merged.push(...extra);
+  return merged;
+}

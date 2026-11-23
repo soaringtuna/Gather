@@ -1,5 +1,5 @@
-import { classCsvName, courseToCsv, stateFromCsv } from "./csv.js?v=12";
-import { beginDriveFolder, beginGoogleSignIn, canListDrive, createDriveFolder, listFolders, storedGoogleToken, takeGoogleResult, takePickedFolder, uploadToFolder } from "./drive.js?v=14";
+import { classCsvName, courseToCsv, coursesOnlyInFolder, mergeCourses, stateFromCsv } from "./csv.js?v=14";
+import { beginDriveFolder, beginGoogleSignIn, canListDrive, createDriveFolder, downloadDriveFile, listCsvFiles, listFolders, storedGoogleToken, takeGoogleResult, takePickedFolder, uploadToFolder } from "./drive.js?v=15";
 import { expectationsForCode, findOntarioCourse, searchOntarioCourses } from "./ontario.js?v=18";
 import { emptyState, loadState, normalizeCourse, normalizeState, saveState } from "./store.js?v=10";
 import {
@@ -103,6 +103,8 @@ function persist() {
 
 let driveSyncTimer = 0;
 let driveSyncQueued = false;
+let driveBusy = false;
+let announceClassFile = false;
 
 function lastSyncText() {
   const stored = localStorage.getItem("class-record-google-synced-at");
@@ -128,11 +130,14 @@ function scheduleDriveSync() {
 }
 
 async function autoDriveSync({ prompt = false } = {}) {
-  if (driveBackup.running) {
+  if (driveBusy) {
     driveSyncQueued = true;
     return;
   }
+  const announce = announceClassFile;
+  announceClassFile = false;
   if (!googleAccountReady()) {
+    if (announce) remindToSyncNewClass();
     if (prompt) {
       warnIfGoogleMissing();
       scrollToGoogleSetup();
@@ -141,6 +146,7 @@ async function autoDriveSync({ prompt = false } = {}) {
   }
   const folder = storedFolder();
   if (!folder) {
+    if (announce) remindToSyncNewClass();
     if (prompt) {
       showToast("Choose a Google Drive folder below.");
       scrollToGoogleSetup();
@@ -149,17 +155,23 @@ async function autoDriveSync({ prompt = false } = {}) {
   }
   const saved = storedGoogleToken();
   if (!saved?.token || !canListDrive(saved.scope)) {
-    if (prompt) showToast("Sign in to sync.");
+    if (announce || prompt) {
+      if (announce) remindToSyncNewClass();
+      else showToast("Sign in to sync.");
+    }
     return;
   }
-  driveBackup.running = true;
+  driveBusy = true;
   try {
-    await saveClassesToFolder(saved.token, folder.id);
+    const savedClasses = await saveClassesToFolder(saved.token, folder.id);
     noteDriveSync();
+    if (savedClasses.added) render();
+    if (announce) showToast(`Class saved to ${folder.name}.`);
   } catch (error) {
     showToast(error.message || "The backup could not be saved.");
+    if (announce) remindToSyncNewClass();
   } finally {
-    driveBackup.running = false;
+    driveBusy = false;
     if (driveSyncQueued) {
       driveSyncQueued = false;
       scheduleDriveSync();
@@ -183,6 +195,23 @@ function alertAction(message) {
 function warnIfGoogleMissing() {
   if (googleAccountReady()) return;
   alertAction("You are not signed into Google Drive. All data is only temporarily saved in the App. Before you exit Backup Class to CSV (Setup). Classes can be re-added using the Import Class from CSV File.");
+}
+
+function canSyncDriveNow() {
+  const saved = storedGoogleToken();
+  return Boolean(storedFolder() && saved?.token && canListDrive(saved.scope));
+}
+
+function remindToSyncNewClass() {
+  if (!googleAccountReady()) {
+    alertAction("This class is only on this device. Sign in on Class Setup, choose a Google folder, and press Sync Classes with Google Drive.");
+    return;
+  }
+  if (!storedFolder()) {
+    alertAction("This class is only on this device. Choose a Google folder on Class Setup, then press Sync Classes with Google Drive.");
+    return;
+  }
+  alertAction("This class is only on this device. Press Sync Classes with Google Drive on Class Setup so a file is saved in your Google folder.");
 }
 
 function scrollToGoogleSetup() {
@@ -1816,7 +1845,7 @@ function renderSetup(course) {
         <button type="button" class="primary" data-action="select-drive-folder">Select Drive Folder</button>
       </div>
       <div id="drive-browser"></div>
-      <button type="button" class="ghost drive-sync save" data-action="drive-backup">${driveIcon()} Manual Save to Google Drive</button>
+      <button type="button" class="ghost drive-sync save" data-action="drive-pull">${driveIcon()} Sync Classes with Google Drive</button>
       <p class="sub sync-time">${esc(lastSyncText())}</p>
     </section>
     <section class="card stack" id="backup-panel">
@@ -1948,16 +1977,87 @@ function downloadClassFiles() {
   return files.map((item) => item.name);
 }
 
-async function saveClassesToFolder(token, folderId) {
+async function readClassesFromFolder(token, folderId) {
+  const files = await listCsvFiles(token, folderId);
+  const courses = [];
+  for (const file of files) {
+    const text = await downloadDriveFile(token, file.id);
+    try {
+      const parsed = stateFromCsv(text);
+      if (Array.isArray(parsed.courses)) courses.push(...parsed.courses);
+    } catch {
+      /* A CSV in the folder that is not a class file stays untouched. */
+    }
+  }
+  return courses;
+}
+
+function applyRemoteClasses(remoteCourses, { includeNew = true } = {}) {
+  if (!remoteCourses.length) return 0;
+  if (!includeNew && coursesOnlyInFolder(db.courses, remoteCourses).length === remoteCourses.length) return 0;
+  const before = db.courses.reduce((sum, course) => sum + course.entries.length, 0);
+  const email = db.backupEmail;
+  const last = db.lastCourseId;
+  const ready = db.ready;
+  db = normalizeState({
+    ...db,
+    courses: mergeCourses(db.courses, remoteCourses, { includeNew }),
+    lastCourseId: last,
+    backupEmail: email,
+  });
+  db.backupEmail = email;
+  db.ready = ready || db.courses.length > 0;
+  saveState(db);
+  const after = db.courses.reduce((sum, course) => sum + course.entries.length, 0);
+  return Math.max(0, after - before);
+}
+
+async function saveClassesToFolder(token, folderId, { merge = true } = {}) {
+  let added = 0;
+  if (merge) added = applyRemoteClasses(await readClassesFromFolder(token, folderId), { includeNew: false });
   const files = classExports();
   if (!files.length) throw new Error("There is no class to save.");
   for (const item of files) await uploadToFolder(token, folderId, item.name, item.csv);
-  return files.map((item) => item.name);
+  return { names: files.map((item) => item.name), added };
 }
 
 function savedClassMessage(names, folderName) {
   if (names.length === 1) return `Saved ${names[0]} in ${folderName}.`;
   return `Saved ${names.length} class files in ${folderName}.`;
+}
+
+function folderClassLabel(course) {
+  const code = course.code || course.name || "Class";
+  const period = course.period ? `Period ${course.period}` : "No Period";
+  return `${code} · ${period}`;
+}
+
+function askImportFolderClasses(courses) {
+  const names = courses.map((course) => folderClassLabel(course)).join(", ");
+  const lead = courses.length === 1
+    ? `${names} is in the Google folder and is not on this device.`
+    : `These classes are in the Google folder and are not on this device: ${names}.`;
+  const question = courses.length === 1
+    ? "Import this class, or sync only the classes already on this device?"
+    : "Import them, or sync only the classes already on this device?";
+  modalEl.innerHTML = `<form method="dialog"><h2>Classes in the Google Folder</h2><p>${esc(lead)} ${question}</p><menu class="stack-menu">
+    <button class="primary" value="import" type="submit">Import Those Classes</button>
+    <button class="primary" value="match" type="submit">Sync Matching Classes Only</button>
+    <button class="ghost" value="cancel" type="submit">Cancel</button>
+  </menu></form>`;
+  modalEl.showModal();
+  return new Promise((resolve) => {
+    let choice = "";
+    modalEl.querySelectorAll("button[value]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (button.value === "import" || button.value === "match" || button.value === "cancel") choice = button.value;
+      });
+    });
+    modalEl.addEventListener("close", () => {
+      const value = choice || modalEl.returnValue;
+      resolve(value === "import" || value === "match" ? value : "");
+    }, { once: true });
+  });
 }
 
 function chooseBackupMode() {
@@ -2185,8 +2285,8 @@ async function selectDriveFolder(button) {
   }
 }
 
-async function driveBackup() {
-  if (driveBackup.running) return;
+async function drivePull() {
+  if (driveBusy) return;
   if (!googleAccountReady()) {
     scrollToGoogleSetup();
     return;
@@ -2197,10 +2297,10 @@ async function driveBackup() {
     scrollToGoogleSetup();
     return;
   }
-  driveBackup.running = true;
+  driveBusy = true;
   try {
     if (await beginDriveFolder()) {
-      sessionStorage.setItem("class-record-google-save", "1");
+      sessionStorage.setItem("class-record-google-pull", "1");
       return;
     }
     const saved = storedGoogleToken();
@@ -2208,13 +2308,36 @@ async function driveBackup() {
       showToast("Sign in first.");
       return;
     }
-    const names = await saveClassesToFolder(saved.token, folder.id);
+    const remote = await readClassesFromFolder(saved.token, folder.id);
+    const extras = coursesOnlyInFolder(db.courses, remote);
+    let includeNew = true;
+    if (extras.length) {
+      const choice = await askImportFolderClasses(extras);
+      if (!choice) {
+        showToast("Sync cancelled.");
+        return;
+      }
+      includeNew = choice === "import";
+    }
+    const added = applyRemoteClasses(remote, { includeNew });
+    const savedClasses = await saveClassesToFolder(saved.token, folder.id, { merge: false });
     noteDriveSync();
-    showToast(savedClassMessage(names, folder.name));
+    const addedText = added ? ` ${added} new ${added === 1 ? "entry" : "entries"} added.` : "";
+    const message = !remote.length
+      ? savedClassMessage(savedClasses.names, folder.name)
+      : includeNew
+        ? `Synced ${savedClasses.names.length} ${savedClasses.names.length === 1 ? "class" : "classes"} from ${folder.name}.${addedText || " Everything in the folder is already on this device."}`
+        : `Synced the classes on this device with ${folder.name}.${addedText}`;
+    showToast(message);
+    render();
   } catch (error) {
-    showToast(error.message || "The backup could not be saved.");
+    showToast(error.message || "The class files could not be read.");
   } finally {
-    driveBackup.running = false;
+    driveBusy = false;
+    if (driveSyncQueued) {
+      driveSyncQueued = false;
+      scheduleDriveSync();
+    }
   }
 }
 
@@ -2247,7 +2370,7 @@ async function onClick(event) {
   const course = courseById(route.courseId);
 
   if (action === "email-backup") return backupClassFiles();
-  if (action === "drive-backup") return driveBackup();
+  if (action === "drive-pull") return drivePull();
   if (action === "google-sign-in") {
     beginGoogleSignIn().catch((error) => showToast(error.message || "Google sign-in did not finish."));
     return;
@@ -2646,7 +2769,8 @@ function onSubmit(event) {
     ui.draftCode = "";
     ui.codeQuery = "";
     showToast("Class created.");
-    warnIfGoogleMissing();
+    if (canSyncDriveNow()) announceClassFile = true;
+    else remindToSyncNewClass();
     return;
   }
   if (!course) return;
@@ -3254,18 +3378,15 @@ async function resumeGoogle() {
   if (result?.email) sessionStorage.setItem("class-record-google-account", googleEmail(result.email) || result.email);
   if (result?.error) showToast(result.error);
   refreshGoogleFields();
-  const wantsSave = sessionStorage.getItem("class-record-google-save") === "1";
-  if (wantsSave) sessionStorage.removeItem("class-record-google-save");
+  const wantsPull = sessionStorage.getItem("class-record-google-pull") === "1" || sessionStorage.getItem("class-record-google-save") === "1";
+  if (wantsPull) {
+    sessionStorage.removeItem("class-record-google-pull");
+    sessionStorage.removeItem("class-record-google-save");
+  }
   const token = storedGoogleToken();
   const folder = storedFolder();
-  if (wantsSave && !result?.error && folder && token?.token && canListDrive(token.scope)) {
-    try {
-      const names = await saveClassesToFolder(token.token, folder.id);
-      noteDriveSync();
-      showToast(savedClassMessage(names, folder.name));
-    } catch (error) {
-      showToast(error.message || "The backup could not be saved.");
-    }
+  if (wantsPull && !result?.error && folder && token?.token && canListDrive(token.scope)) {
+    drivePull();
   } else if (!result?.error && result?.pending === "folder" && canListDrive(result.token?.scope)) {
     openDriveBrowser();
   }

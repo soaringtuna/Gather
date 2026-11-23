@@ -126,12 +126,12 @@ export async function takeGoogleResult() {
   }
 }
 
-async function driveMessage(response) {
+async function driveMessage(response, fallback = "The backup could not be saved.") {
   try {
     const body = await response.json();
-    return String(body.error?.message || "The backup could not be saved.").slice(0, 140);
+    return String(body.error?.message || fallback).slice(0, 140);
   } catch {
-    return "The backup could not be saved.";
+    return fallback;
   }
 }
 
@@ -224,4 +224,38 @@ export function takePickedFolder() {
 
 export async function uploadToFolder(token, folderId, name, csv) {
   await uploadCsv(token, folderId, name, csv);
+}
+
+export async function listCsvFiles(token, folderId) {
+  const parent = folderParent(folderId);
+  const q = `'${parent}' in parents and trashed = false`;
+  const files = [];
+  let pageToken = "";
+  do {
+    const url = new URL("https://www.googleapis.com/drive/v3/files");
+    url.searchParams.set("q", q);
+    url.searchParams.set("fields", "nextPageToken,files(id,name,mimeType)");
+    url.searchParams.set("pageSize", "100");
+    url.searchParams.set("spaces", "drive");
+    if (pageToken) url.searchParams.set("pageToken", pageToken);
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) throw new Error(await driveMessage(response, "The class files could not be read."));
+    const body = await response.json();
+    for (const file of body.files || []) {
+      const name = String(file.name || "");
+      if (!name.toLowerCase().endsWith(".csv")) continue;
+      if (String(file.mimeType || "").startsWith("application/vnd.google-apps.")) continue;
+      files.push({ id: file.id, name });
+    }
+    pageToken = body.nextPageToken || "";
+  } while (pageToken);
+  return files;
+}
+
+export async function downloadDriveFile(token, fileId) {
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error(await driveMessage(response, "The class files could not be read."));
+  return response.text();
 }
