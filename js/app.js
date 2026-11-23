@@ -13,13 +13,14 @@ import {
   levelById,
   levelFromPercent,
   parsePercent,
+  normalizeStudentPaste,
   parseStudentLine,
   studentName,
   studentSortKey,
   summarizeStudent,
   todayISO,
   uid,
-} from "./model.js?v=4";
+} from "./model.js?v=5";
 
 const appEl = document.querySelector("#app");
 const toastEl = document.querySelector("#toast");
@@ -51,6 +52,7 @@ let loadCourseCode = "";
 let loadingExpectations = false;
 let scrollTilesToTop = false;
 let scrollEntryDetails = false;
+let scrollSetupFold = "";
 
 function esc(value) {
   return String(value ?? "")
@@ -863,6 +865,7 @@ function paint(route, course) {
   }
   const alignTiles = scrollTilesToTop && route.name === "class";
   const alignEntry = scrollEntryDetails && route.name === "class";
+  const alignFold = scrollSetupFold;
   appEl.innerHTML = shell(route, course, body);
   requestAnimationFrame(() => {
     fitSeatTiles();
@@ -873,6 +876,10 @@ function paint(route, course) {
     if (alignEntry) {
       scrollEntryDetails = false;
       scrollEntryPanelToTop();
+    }
+    if (alignFold) {
+      scrollSetupFold = "";
+      scrollFoldBelowBar(alignFold);
     }
   });
 }
@@ -887,6 +894,22 @@ function scrollPanelBelowBar(panel) {
 
 function scrollStudentListToTop() {
   scrollPanelBelowBar(document.querySelector(".seat-plan"));
+}
+
+function scrollFoldBelowBar(foldId) {
+  const panel = document.querySelector(`.setup-fold[data-fold="${CSS.escape(foldId)}"]`);
+  if (!panel) return;
+  const bar = document.querySelector(".appbar");
+  const offset = bar ? bar.getBoundingClientRect().height : 0;
+  const page = document.querySelector(".shell");
+  if (page) page.style.paddingBottom = "";
+  const target = window.scrollY + panel.getBoundingClientRect().top - offset;
+  const max = document.documentElement.scrollHeight - window.innerHeight;
+  if (page && target > max + 1) {
+    page.style.paddingBottom = `${Math.ceil(target - max)}px`;
+    page.getBoundingClientRect();
+  }
+  window.scrollTo(0, Math.max(0, target));
 }
 
 function scrollEntryPanelToTop() {
@@ -2390,6 +2413,7 @@ async function onClick(event) {
     return;
   }
   if (action === "reload-expectations" && course) {
+    scrollFoldBelowBar("expectations");
     const code = loadCourseCode || codeFromCourseSelect() || catalogueCode(course.code);
     loadCourseCode = "";
     loadingExpectations = true;
@@ -2470,11 +2494,13 @@ async function onClick(event) {
     persist();
     const depth = choice === "specific" ? "Overall and specific expectations" : "Overall expectations";
     showToast(mode === "add" ? `${depth} added for ${course.code}.` : `${depth} loaded for ${course.code}.`);
+    scrollSetupFold = "expectations";
     render();
     setTimeout(() => { loadingExpectations = false; }, 0);
     return;
   }
   if (action === "load-learning-skills" && course) {
+    scrollFoldBelowBar("expectations");
     loadingExpectations = true;
     const existing = visibleExpectations(course);
     const choice = await chooseLearningSkillMode();
@@ -2485,17 +2511,20 @@ async function onClick(event) {
     applyLearningSkills(course, choice, existing);
     persist();
     showToast(choice === "add" ? "Learning skills added." : "Learning skills loaded.");
+    scrollSetupFold = "expectations";
     render();
     setTimeout(() => { loadingExpectations = false; }, 0);
     return;
   }
   if (action === "load-behaviour-suggestions" && course) {
+    scrollFoldBelowBar("behaviour");
     const choice = await chooseListMode("Load Suggested Behaviour Expectations", "Replace the current behaviour expectations, or add these suggestions to the existing list?");
     if (!choice) return;
     applySuggestedBehaviours(course, choice);
     persist();
     showToast(choice === "add" ? "Suggested behaviour expectations added." : "Suggested behaviour expectations loaded.");
     warnIfGoogleMissing();
+    scrollSetupFold = "behaviour";
     render();
     return;
   }
@@ -3150,6 +3179,24 @@ function onChange(event) {
   }
 }
 
+function onStudentPaste(event) {
+  const target = event.target;
+  if (target?.id !== "student-list") return;
+  const raw = event.clipboardData?.getData("text/plain");
+  if (raw == null) return;
+  event.preventDefault();
+  const start = target.selectionStart ?? target.value.length;
+  const end = target.selectionEnd ?? start;
+  const head = normalizeStudentPaste(target.value.slice(0, start));
+  const body = normalizeStudentPaste(raw);
+  const tail = normalizeStudentPaste(target.value.slice(end));
+  const lines = [head, body, tail].flatMap((part) => (part ? part.split("\n") : [])).filter(Boolean);
+  target.value = lines.join("\n");
+  const cursor = [head, body].flatMap((part) => (part ? part.split("\n") : [])).filter(Boolean).join("\n").length;
+  target.setSelectionRange(cursor, cursor);
+  target.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 function onInput(event) {
   const target = event.target;
   if (target.id === "checkpoint-custom") {
@@ -3349,6 +3396,7 @@ function start() {
   appEl.addEventListener("submit", onSubmit);
   appEl.addEventListener("change", onChange);
   appEl.addEventListener("input", onInput);
+  appEl.addEventListener("paste", onStudentPaste);
   appEl.addEventListener("focusout", onFocusOut);
   appEl.addEventListener("keydown", onClassSwitchKey);
   appEl.addEventListener("toggle", onSetupFold, true);

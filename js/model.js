@@ -97,6 +97,51 @@ export function parseStudentLine(line) {
   return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
 }
 
+function commaParts(line) {
+  const parts = [];
+  let current = "";
+  let quoted = false;
+  for (const char of line) {
+    if (char === "\"") {
+      quoted = !quoted;
+      continue;
+    }
+    if (char === "," && !quoted) {
+      parts.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  parts.push(current.trim());
+  return parts.filter(Boolean);
+}
+
+function namesFromChunk(chunk) {
+  const cleaned = chunk.trim().replace(/\s+/g, " ");
+  if (!cleaned) return [];
+  const parts = commaParts(cleaned);
+  if (parts.length === 1) return parts;
+  if (parts.length === 2 && !/\s/.test(parts[0])) return [`${parts[1]} ${parts[0]}`.replace(/\s+/g, " ")];
+  return parts.flatMap(namesFromChunk);
+}
+
+export function normalizeStudentPaste(text) {
+  const names = [];
+  for (const rawLine of String(text || "").replace(/\u00a0/g, " ").replace(/\r\n?/g, "\n").split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const columns = line.split("\t").map((part) => part.trim()).filter(Boolean);
+    if (columns.length === 2 && !columns[0].includes(",") && !columns[1].includes(",") && !/\s/.test(columns[0]) && !/\s/.test(columns[1])) {
+      names.push(`${columns[1]} ${columns[0]}`);
+      continue;
+    }
+    const pieces = columns.length > 1 ? columns : [line];
+    for (const piece of pieces) names.push(...namesFromChunk(piece));
+  }
+  return names.map((name) => name.trim().replace(/\s+/g, " ")).filter(Boolean).join("\n");
+}
+
 export function isBehaviourEntry(entry) {
   return entry?.record === "behaviour";
 }
