@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Serve the class record and read Ontario curriculum documents on demand.
+"""Serve the class record and read Ontario curriculum pages on demand.
 
 The ministry curriculum site does not allow a browser on this origin to read
 its catalogue directly, so Load Expectations calls /api/curriculum here.
+Courses that are not in a PDF are read from the curriculum website. A focus
+course such as TGJ1O uses the expectations of the course it is based on.
 """
 
 import html
@@ -28,6 +30,7 @@ PORT = int(os.environ.get("PORT", "8765"))
 _lock = threading.Lock()
 _documents = {}
 _pdf_bytes = {}
+_focus_bases = None
 
 
 def api_get(path, params):
@@ -449,32 +452,115 @@ def expectations_from_pdf(course_code, title, blob):
     return coded
 
 
-def document_for_code(code):
+def html_lines(value):
+    text = re.sub(r"<[^>]+>", "\n", value or "")
+    text = html.unescape(text).replace("\xa0", " ").replace("\u200b", "").replace("\u00ad", "")
+    lines = []
+    for line in text.splitlines():
+        line = re.sub(r"\s+", " ", line).strip()
+        if line:
+            lines.append(line)
+    return lines
+
+
+def collect_html(value, found):
+    if isinstance(value, str):
+        lowered = value.lower()
+        if "basis of the expectations" in lowered or "focus courses" in lowered:
+            found.append(value)
+    elif isinstance(value, dict):
+        for child in value.values():
+            collect_html(child, found)
+    elif isinstance(value, list):
+        for child in value:
+            collect_html(child, found)
+
+
+def focus_course_bases():
+    """Read the curriculum website for courses that use another course's expectations."""
+    global _focus_bases
+    with _lock:
+        cached = _focus_bases
+    if cached is not None:
+        return cached
+    mapping = {}
+    try:
+        data = api_get("items", {
+            "elements.url_slug[eq]": "g9-10-program",
+            "depth": "5",
+            "limit": "5",
+            "language": "en-CA",
+        })
+    except Exception:
+        data = {}
+    chunks = []
+    collect_html(data, chunks)
+    lines = []
+    for chunk in chunks:
+        lines.extend(html_lines(chunk))
+    basis = " ".join(line for line in lines if "basis of the expectations" in line.lower())
+    grade_bases = {}
+    for grade, base in re.findall(r"Grade\s+(9|10|11|12)\s+\(([A-Z]{3}[1-4][A-Z0-9])\)", basis):
+        grade_bases[grade] = base
+    grade = ""
+    for line in lines:
+        heading = re.search(r"related to Grade\s+(9|10|11|12)\b", line, re.I)
+        if heading:
+            grade = heading.group(1)
+            continue
+        match = re.match(r"^([A-Z]{3}[1-4][A-Z0-9])\s+[–—-]\s+\S", line)
+        if match and grade in grade_bases and grade_bases[grade] != match.group(1):
+            mapping[match.group(1)] = grade_bases[grade]
+    with _lock:
+        _focus_bases = mapping
+    return mapping
+
+
+def retag_expectations(course_code, items):
+    retagged = []
+    for item in items:
+        exp_code = item["label"].split(" ", 1)[0]
+        copy = dict(item)
+        copy["id"] = expectation_id(course_code, exp_code)
+        retagged.append(copy)
+    return retagged
+
+
+def document_for_code(code, depth=0):
     with _lock:
         cached = _documents.get(code)
     if cached:
         return cached
     items, modular = course_items(code)
-    if not items:
-        payload = {"citation": "", "hasSpecific": False, "items": [], "error": f"No curriculum document lists {code}."}
-        return payload
-    chosen = choose_course(items, modular)
-    _, _, _, item, strands = chosen
-    citation = citation_for_course(item, modular)
-    expectations = fill_digital_items(code, strands) if strands else []
-    if not expectations:
-        for title, url in pdf_candidates(item, modular):
-            try:
-                blob = download_pdf(url)
-                expectations = expectations_from_pdf(code, title, blob)
-            except Exception:
-                expectations = []
-            if expectations:
-                citation = title or citation
-                break
+    item = None
+    strands = []
+    citation = ""
+    expectations = []
+    if items:
+        chosen = choose_course(items, modular)
+        _, _, _, item, strands = chosen
+        citation = citation_for_course(item, modular) if item else ""
+        expectations = fill_digital_items(code, strands) if strands else []
+        if not expectations and item:
+            for title, url in pdf_candidates(item, modular):
+                try:
+                    blob = download_pdf(url)
+                    expectations = expectations_from_pdf(code, title, blob)
+                except Exception:
+                    expectations = []
+                if expectations:
+                    citation = title or citation
+                    break
+    if not expectations and depth == 0:
+        base = focus_course_bases().get(code)
+        if base and base != code:
+            borrowed = document_for_code(base, depth=1)
+            if borrowed.get("items"):
+                expectations = retag_expectations(code, borrowed["items"])
+                citation = f"{borrowed['citation']}. {code} is a focus course based on {base}."
     payload = {
         "citation": citation,
-        "hasSpecific": any(item["specific"] for item in expectations),
+        "hasSpecific": any(entry["specific"] for entry in expectations),
         "items": expectations,
         "error": "" if expectations else f"No expectations were found in the curriculum document for {code}.",
     }
