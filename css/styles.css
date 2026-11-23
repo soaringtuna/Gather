@@ -135,6 +135,7 @@ h1, h2, h3 { font-weight: 700; letter-spacing: -0.03em; margin: 0; }
 h1 { font-size: clamp(1.7rem, 2.4vw, 2.1rem); line-height: 1.1; }
 h2 { font-size: 1.05rem; }
 .setup-fold { padding: 0; }
+.card.setup-fold[data-fold] { padding: 0; }
 .setup-fold summary {
   display: flex;
   align-items: center;
@@ -146,6 +147,13 @@ h2 { font-size: 1.05rem; }
   letter-spacing: -0.03em;
   padding: 16px;
   list-style: none;
+}
+.setup-fold[data-fold] summary {
+  box-sizing: border-box;
+  height: 45.2px;
+  padding: 0 16px;
+  font-size: 1rem;
+  line-height: 1;
 }
 .setup-fold summary::-webkit-details-marker { display: none; }
 .setup-fold summary::marker { content: ""; }
@@ -159,9 +167,10 @@ h2 { font-size: 1.05rem; }
   flex: none;
 }
 .setup-fold[open] summary::after { transform: rotate(-135deg); margin-top: 4px; }
-.setup-fold.stack > :not(summary) { margin-left: 16px; margin-right: 16px; }
+.setup-fold.stack { gap: 0; }
+.setup-fold.stack > :not(summary) { margin: 12px 16px 0; }
 .setup-fold.stack > :last-child { margin-bottom: 16px; }
-.setup-fold.form-fold > form { margin: 0 16px 16px; }
+.setup-fold.form-fold > form { margin: 12px 16px 16px; }
 .setup-fold[data-fold="course"],
 .setup-fold[data-fold="students"] { background: #213faf; color: white; }
 .setup-fold[data-fold="expectations"],
