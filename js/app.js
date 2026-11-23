@@ -1540,13 +1540,13 @@ function renderRoster(course) {
           </div>
         </a>
         <div class="summary-actions noprint">
-          <button type="button" class="ghost" data-action="export-student-pdf" data-student="${esc(student.id)}">Export PDF Report</button>
+          <button type="button" class="ghost" data-action="export-student-pdf" data-student="${esc(student.id)}">Export Individual PDF Report</button>
         </div>
       </article>`;
     })
     .join("");
   return `<div class="stack">
-    <button type="button" class="primary full-button noprint" data-action="export-class-pdf">Export All Reports</button>
+    <button type="button" class="primary full-button noprint" data-action="export-class-pdf">Export All Student Reports</button>
     <label class="field noprint"><input id="roster-search" type="search" value="${esc(ui.search)}" placeholder="Find A Student" aria-label="Find A Student" /></label>
     <div class="summary-list">${rows || "<p>No students match.</p>"}</div>
     <p class="sub">The numbers count assessment entries at each level, from Level 4 to below Level 1. The line is each recorded assessment percent, oldest to newest. Behaviour entries are listed on the student summary and are not included in these counts. Neither one is a calculated mark.</p>
@@ -1735,7 +1735,7 @@ function renderStudent(course, student) {
     <div class="student-head">
       <a href="${hrefFor(course.id, "roster")}">← Summary</a>
       <div class="student-actions noprint">
-        <button type="button" class="ghost" data-action="export-student-pdf" data-student="${esc(student.id)}">Export PDF Report</button>
+        <button type="button" class="ghost" data-action="export-student-pdf" data-student="${esc(student.id)}">Export Individual PDF Report</button>
         <a class="primary" href="${captureHref(course.id, student.id, null, "student")}">Add Entry</a>
       </div>
       <h2 class="student-name">${esc(studentName(student))}</h2>
