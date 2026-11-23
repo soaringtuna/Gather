@@ -46,6 +46,7 @@ const COLUMNS = [
   "expectationGroup",
   "curriculumCitation",
   "record",
+  "audio",
 ];
 
 function cell(value) {
@@ -154,6 +155,7 @@ export function stateToCsv(state) {
         percent: entry.percent,
         note: entry.note || "",
         photo: entry.photo || "",
+        audio: entry.audio || "",
         createdAt: entry.createdAt || "",
       }));
     }
@@ -317,6 +319,7 @@ export function stateFromCsv(text) {
         percent: Number(value(record, "percent")),
         note: value(record, "note"),
         photo: value(record, "photo"),
+        audio: value(record, "audio"),
         createdAt: value(record, "createdAt"),
       });
     } else if (type === "mark") {

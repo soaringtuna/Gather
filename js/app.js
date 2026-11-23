@@ -1,7 +1,7 @@
-import { classCsvName, courseToCsv, stateFromCsv } from "./csv.js?v=11";
+import { classCsvName, courseToCsv, stateFromCsv } from "./csv.js?v=12";
 import { beginDriveFolder, beginGoogleSignIn, canListDrive, createDriveFolder, listFolders, storedGoogleToken, takeGoogleResult, takePickedFolder, uploadToFolder } from "./drive.js?v=14";
 import { expectationsForCode, findOntarioCourse, searchOntarioCourses } from "./ontario.js?v=18";
-import { emptyState, loadState, normalizeCourse, normalizeState, saveState } from "./store.js?v=8";
+import { emptyState, loadState, normalizeCourse, normalizeState, saveState } from "./store.js?v=10";
 import {
   KINDS,
   LEVELS,
@@ -50,6 +50,7 @@ let ignoreClick = false;
 let loadCourseCode = "";
 let loadingExpectations = false;
 let scrollTilesToTop = false;
+let scrollEntryDetails = false;
 
 function esc(value) {
   return String(value ?? "")
@@ -87,7 +88,7 @@ function showToast(message) {
 function confirmAction(message, confirmLabel = "Delete") {
   modalEl.innerHTML = `<form method="dialog"><p>${esc(message)}</p><menu>
     <button class="ghost" value="cancel" type="submit">Cancel</button>
-    <button class="${/delete|erase|remove/i.test(confirmLabel) ? "danger" : "primary"}" value="ok" type="submit">${esc(confirmLabel)}</button>
+    <button class="${/delete|erase|remove|clear/i.test(confirmLabel) ? "danger" : "primary"}" value="ok" type="submit">${esc(confirmLabel)}</button>
   </menu></form>`;
   modalEl.showModal();
   return new Promise((resolve) => {
@@ -192,6 +193,13 @@ function expectationDescription(detail) {
   return String(detail || "").replace(/^\s*The Ontario Curriculum\b[^.]*\.\s*/i, "").trim();
 }
 
+function audioSrc(value) {
+  const text = String(value || "");
+  if (text.startsWith("data:audio/")) return text;
+  if (text.startsWith("data:video/webm")) return text;
+  return "";
+}
+
 function photoSrc(value) {
   return String(value || "").startsWith("data:image/") ? String(value) : "";
 }
@@ -216,6 +224,103 @@ function readPhotoFile(file) {
     };
     reader.readAsDataURL(file);
   });
+}
+
+let voiceNote = null;
+
+function voiceMimeType() {
+  if (typeof MediaRecorder === "undefined") return "";
+  const types = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/aac"];
+  return types.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+}
+
+function discardVoiceNote() {
+  const note = voiceNote;
+  if (!note) return;
+  note.keep = false;
+  voiceNote = null;
+  if (ui.capture) ui.capture.recording = false;
+  if (note.recorder.state !== "inactive") note.recorder.stop();
+  else note.stream.getTracks().forEach((track) => track.stop());
+}
+
+function finishVoiceNote(note) {
+  note.stream.getTracks().forEach((track) => track.stop());
+  if (!note.keep || !ui.capture) return;
+  const blob = new Blob(note.chunks, { type: note.recorder.mimeType || "audio/webm" });
+  ui.capture.recording = false;
+  if (!blob.size) {
+    showToast("No voice note was recorded.");
+    render();
+    return;
+  }
+  if (blob.size > 1500000) {
+    showToast("That voice note is too long. Record a shorter one.");
+    render();
+    return;
+  }
+  const reader = new FileReader();
+  reader.onerror = () => showToast("The voice note could not be saved.");
+  reader.onload = () => {
+    if (!ui.capture) return;
+    ui.capture.audio = audioSrc(reader.result);
+    ui.capture.recording = false;
+    render();
+  };
+  reader.readAsDataURL(blob);
+}
+
+let voiceStarting = false;
+
+async function toggleVoiceNote() {
+  if (!ui.capture) return;
+  if (voiceNote) {
+    const note = voiceNote;
+    note.keep = true;
+    voiceNote = null;
+    if (note.recorder.state !== "inactive") note.recorder.stop();
+    else finishVoiceNote(note);
+    return;
+  }
+  if (voiceStarting || ui.capture.recording) return;
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+    showToast("This browser cannot record a voice note.");
+    return;
+  }
+  voiceStarting = true;
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    voiceStarting = false;
+    showToast("Allow the microphone to record a voice note.");
+    return;
+  }
+  voiceStarting = false;
+  const mime = voiceMimeType();
+  let recorder;
+  try {
+    recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+  } catch {
+    stream.getTracks().forEach((track) => track.stop());
+    showToast("This browser cannot record a voice note.");
+    return;
+  }
+  const note = { recorder, stream, chunks: [], keep: true };
+  recorder.ondataavailable = (event) => { if (event.data?.size) note.chunks.push(event.data); };
+  recorder.onstop = () => finishVoiceNote(note);
+  voiceNote = note;
+  ui.capture.recording = true;
+  try {
+    recorder.start();
+  } catch {
+    voiceNote = null;
+    ui.capture.recording = false;
+    stream.getTracks().forEach((track) => track.stop());
+    showToast("This browser cannot record a voice note.");
+    return;
+  }
+  render();
 }
 
 function courseById(id) {
@@ -652,14 +757,20 @@ function ensureStarterCourse() {
   applyLearningSkills(course, "replace", []);
   db.courses.push(course);
   db.lastCourseId = course.id;
+  db.ready = true;
   persist();
   return course;
 }
 
 function render() {
   const route = parseRoute();
-  if (!db.courses.length && (route.name === "home" || route.name === "new")) {
+  if (route.name !== "capture") discardVoiceNote();
+  if (!db.courses.length && !db.ready && (route.name === "home" || route.name === "new")) {
     location.hash = hrefFor(ensureStarterCourse().id, "setup");
+    return;
+  }
+  if (!db.courses.length && route.name === "home") {
+    location.hash = "#/new";
     return;
   }
   const tab = tabName(route);
@@ -722,22 +833,43 @@ function paint(route, course) {
       : `<section class="card"><h1>That Student Is Not In This Course</h1><p><a href="${hrefFor(course.id, "roster")}">Back to the roster</a></p></section>`;
   }
   const alignTiles = scrollTilesToTop && route.name === "class";
+  const alignEntry = scrollEntryDetails && route.name === "class";
   appEl.innerHTML = shell(route, course, body);
   requestAnimationFrame(() => {
     fitSeatTiles();
-    if (!alignTiles) return;
-    scrollTilesToTop = false;
-    scrollStudentListToTop();
+    if (alignTiles) {
+      scrollTilesToTop = false;
+      scrollStudentListToTop();
+    }
+    if (alignEntry) {
+      scrollEntryDetails = false;
+      scrollEntryPanelToTop();
+    }
   });
 }
 
-function scrollStudentListToTop() {
-  const panel = document.querySelector(".seat-plan");
+function scrollPanelBelowBar(panel) {
   if (!panel) return;
   const bar = document.querySelector(".appbar");
   const offset = bar ? bar.getBoundingClientRect().height : 0;
   const top = window.scrollY + panel.getBoundingClientRect().top - offset;
   window.scrollTo(0, Math.max(0, top));
+}
+
+function scrollStudentListToTop() {
+  scrollPanelBelowBar(document.querySelector(".seat-plan"));
+}
+
+function scrollEntryPanelToTop() {
+  const panel = document.querySelector(".entry-panel");
+  if (!panel) return;
+  const bar = document.querySelector(".appbar");
+  const offset = bar ? bar.getBoundingClientRect().height : 0;
+  const target = window.scrollY + panel.getBoundingClientRect().top - offset;
+  const max = document.documentElement.scrollHeight - window.innerHeight;
+  const page = document.querySelector(".class-page");
+  if (page && target > max + 1) page.style.paddingBottom = `${Math.ceil(target - max)}px`;
+  window.scrollTo(0, Math.max(0, target));
 }
 
 function fitSeatTiles() {
@@ -995,7 +1127,7 @@ function renderClass(course) {
       const total = course.entries.filter((entry) => entry.studentId === student.id && !isBehaviourEntry(entry)).length;
       const tone = target ? (weekly >= target ? "is-met" : "is-short") : "";
       const progress = target ? `, ${weekly} of ${target} toward the weekly goal` : "";
-      return `<div class="tile ${tone}" data-student="${esc(student.id)}"><span class="tile-count week" aria-hidden="true">${weekly}</span><span class="tile-count total" aria-hidden="true">${total}</span><a href="${captureHref(course.id, student.id)}" aria-label="${esc(studentName(student))}, ${weekly} this week, ${total} total${esc(progress)}"><strong>${esc(initials(student))}</strong></a></div>`;
+      return `<div class="tile ${tone}" data-student="${esc(student.id)}"><span class="tile-count week" aria-hidden="true">${weekly}</span><span class="tile-count total" aria-hidden="true">${total}</span><a href="${captureHref(course.id, student.id)}" aria-label="${esc(studentName(student))}, ${weekly} this week, ${total} total${esc(progress)}"><strong>${esc(initials(student))}</strong></a><span class="tile-tip" role="tooltip">${esc(studentName(student))}</span></div>`;
     })
     .join("");
   const expectationOptions = expectationMenu(course, focusId);
@@ -1070,6 +1202,7 @@ function entryCard(course, entry) {
     <div class="sub">${esc(formatDate(entry.date))}</div>
     ${entry.note ? `<p class="note">${esc(entry.note)}</p>` : ""}
     ${photoSrc(entry.photo) ? `<img class="entry-photo" alt="Photo For This Entry" src="${entry.photo}" />` : ""}
+    ${audioSrc(entry.audio) ? `<audio class="entry-audio" controls src="${esc(entry.audio)}"></audio>` : ""}
     <div class="row noprint">
       <a class="ghost" style="text-decoration:none" href="${captureHref(course.id, entry.studentId, entry.id)}">Edit</a>
       <button type="button" class="text-button" data-action="delete-entry" data-entry="${esc(entry.id)}">Delete</button>
@@ -1103,6 +1236,8 @@ function ensureCapture(course, route) {
       touched: true,
       note: entry.note || "",
       photo: photoSrc(entry.photo),
+      audio: audioSrc(entry.audio),
+      recording: false,
       showNote: Boolean(entry.note),
     };
     return;
@@ -1129,6 +1264,8 @@ function ensureCapture(course, route) {
     touched: false,
     note: "",
     photo: "",
+    audio: "",
+    recording: false,
     showNote: false,
   };
 }
@@ -1177,14 +1314,17 @@ function renderCapture(course, student) {
       <div class="evidence-actions">
         <button type="button" class="primary" data-action="add-photo">Add Photo</button>
         <button type="button" class="primary" data-action="add-note">Add Note</button>
+        <button type="button" class="primary voice-note ${capture.recording ? "voice-live" : ""}" data-action="toggle-voice">${capture.recording ? "Stop Voice Note" : "Voice Note"}</button>
       </div>
       <input id="entry-photo" class="photo-input" type="file" accept="image/*" />
       ${photoSrc(capture.photo) ? `<img class="entry-photo" alt="Photo For This Entry" src="${capture.photo}" /><button type="button" class="text-button" data-action="remove-photo">Remove Photo</button>` : ""}
+      ${audioSrc(capture.audio) ? `<audio class="entry-audio" controls src="${esc(capture.audio)}"></audio><button type="button" class="text-button" data-action="remove-voice">Remove Voice Note</button>` : ""}
       ${capture.showNote ? `<label class="field" style="margin-top:10px"><input id="entry-note" type="text" maxlength="400" aria-label="Note" value="${esc(capture.note)}" /></label>` : ""}
     </section>
     <section class="dock ${capture.touched ? "is-set" : ""}">
       <div class="level-row">${levelButtons}</div>
       <button type="button" class="chip-btn below-btn" data-action="pick-level" data-level="0" aria-pressed="${capture.touched && capture.level === "0"}">Below Level 1 · Under 50%</button>
+      <a class="ghost full-button cancel-entry" href="${backHref}">Cancel</a>
       <button id="save-entry" class="save-bar save" type="submit" ${ready ? "" : "disabled"}>${esc(saveLabel)}</button>
     </section>
   </form>`;
@@ -1262,7 +1402,7 @@ function studentReportPage(course, student) {
   const entryRows = entries.length
     ? entries.map((entry) => {
       const level = levelById(entry.level);
-      const note = [String(entry.note || "").trim(), photoSrc(entry.photo) ? "Photo attached." : ""].filter(Boolean).join(" ");
+      const note = [String(entry.note || "").trim(), photoSrc(entry.photo) ? "Photo attached." : "", audioSrc(entry.audio) ? "Voice note attached." : ""].filter(Boolean).join(" ");
       const kindLabel = `${kindById(entry.kind).label}${isBehaviourEntry(entry) ? " · Behaviour" : ""}`;
       return `<tr><td>${esc(formatDate(entry.date))}</td><td>${esc(kindLabel)}</td><td>${esc(entry.expectationLabel || "")}</td><td>${esc(level ? level.name : "")}</td><td>${Number.isFinite(Number(entry.percent)) ? `${esc(entry.percent)}%` : ""}</td><td>${esc(note)}</td></tr>`;
     }).join("")
@@ -1381,6 +1521,7 @@ function renderRoster(course) {
     <label class="field noprint"><input id="roster-search" type="search" value="${esc(ui.search)}" placeholder="Find A Student" aria-label="Find A Student" /></label>
     <div class="summary-list">${rows || "<p>No students match.</p>"}</div>
     <p class="sub">The numbers count assessment entries at each level, from Level 4 to below Level 1. The line is each recorded assessment percent, oldest to newest. Behaviour entries are listed on the student summary and are not included in these counts. Neither one is a calculated mark.</p>
+    <button type="button" class="danger full-button noprint" data-action="clear-class-entries">Erase All Entries</button>
   </div>`;
 }
 
@@ -1611,6 +1752,7 @@ function renderStudent(course, student) {
       ${checkpointDraft(student.id).choice === "custom" ? `<label class="field">Custom Name<input id="checkpoint-custom" type="text" placeholder="Checkpoint Name" value="${esc(checkpointDraft(student.id).custom)}" /></label>` : ""}
       ${checkpointList(mark.checkpoints)}
     </section>
+    <button type="button" class="danger full-button noprint" data-action="clear-student-entries" data-student="${esc(student.id)}">Clear All Entries</button>
     <details class="card stack setup-fold entry-fold" data-entries="${esc(student.id)}"${ui.entriesOpen[student.id] ? " open" : ""}>
       <summary>All Entries for ${esc(studentName(student))}</summary>
       ${summary.entries.length ? summary.entries.map((entry) => entryCard(course, entry)).join("") : `<p class="sub">Nothing recorded yet.</p>`}
@@ -1742,6 +1884,7 @@ function saveCapture(course) {
     percent: Number(capture.percent),
     note: capture.note.trim(),
     photo: photoSrc(capture.photo),
+    audio: audioSrc(capture.audio),
   };
   if (capture.entryId) {
     const existing = course.entries.find((item) => item.id === capture.entryId);
@@ -2281,6 +2424,15 @@ async function onClick(event) {
     document.getElementById("entry-photo")?.click();
     return;
   }
+  if (action === "toggle-voice") {
+    toggleVoiceNote();
+    return;
+  }
+  if (action === "remove-voice" && ui.capture) {
+    ui.capture.audio = "";
+    render();
+    return;
+  }
   if (action === "add-note" && ui.capture) {
     ui.capture.showNote = true;
     render();
@@ -2320,19 +2472,46 @@ async function onClick(event) {
     render();
     return;
   }
+  if (action === "clear-student-entries") {
+    const student = studentById(course, target.dataset.student);
+    const name = student ? studentName(student) : "this student";
+    const count = course.entries.filter((entry) => entry.studentId === target.dataset.student).length;
+    if (!count) {
+      showToast("No entries to clear.");
+      return;
+    }
+    const ok = await confirmAction(`Clear all ${count} ${count === 1 ? "entry" : "entries"} for ${name}? The student stays.`, "Clear All Entries");
+    if (!ok) return;
+    course.entries = course.entries.filter((entry) => entry.studentId !== target.dataset.student);
+    persist();
+    showToast("Entries cleared.");
+    render();
+    return;
+  }
+  if (action === "clear-class-entries") {
+    const count = course.entries.length;
+    if (!count) {
+      showToast("No entries to erase.");
+      return;
+    }
+    const label = course.code || course.name;
+    const ok = await confirmAction(`Erase all ${count} ${count === 1 ? "entry" : "entries"} in ${label}? Students stay.`, "Erase All Entries");
+    if (!ok) return;
+    course.entries = [];
+    persist();
+    showToast("Class entries erased.");
+    render();
+    return;
+  }
   if (action === "delete-course") {
-    const ok = await confirmAction(`Delete ${course.code || course.name} and its entries?`);
+    const ok = await confirmAction(course.sample ? "Delete the sample class and all of its data?" : `Delete ${course.code || course.name} and its entries?`);
     if (!ok) return;
     db.courses = db.courses.filter((item) => item.id !== course.id);
     db.lastCourseId = db.courses[0]?.id || null;
-    if (!db.lastCourseId) {
-      const starter = ensureStarterCourse();
-      location.hash = hrefFor(starter.id, "setup");
-    } else {
-      persist();
-      location.hash = hrefFor(db.lastCourseId, keptTab);
-    }
-    showToast("Course deleted.");
+    db.ready = true;
+    persist();
+    location.hash = db.lastCourseId ? hrefFor(db.lastCourseId, keptTab) : "#/new";
+    showToast(course.sample ? "Sample class deleted." : "Course deleted.");
     return;
   }
   if (action === "delete-student") {
@@ -2453,13 +2632,13 @@ function onSubmit(event) {
       semesterLabel: String(data.get("semester") || ""),
       period: periodValue(data.get("period")),
       students,
-      expectations: expectationsForCode(code).items.map((item) => ({ id: item.id, label: item.label, detail: item.detail, group: item.group || "" })),
+      expectations: [],
       expectationsManaged: true,
+      behaviourExpectations: [],
       sessions: [],
       entries: [],
       marks: {},
     });
-    if (!created.expectations.length) created.expectations = normalizeCourse({ expectations: undefined }).expectations;
     db.courses.push(created);
     db.lastCourseId = created.id;
     persist();
@@ -2682,12 +2861,14 @@ function onChange(event) {
   if (target.id === "focus-expectation" && course) {
     ui.focus[course.id] = target.value;
     if (target.value) ui.behaviourFocus[course.id] = "";
+    if (target.value) scrollEntryDetails = true;
     render();
     return;
   }
   if (target.id === "focus-behaviour" && course) {
     ui.behaviourFocus[course.id] = target.value;
     if (target.value) ui.focus[course.id] = "";
+    if (target.value) scrollEntryDetails = true;
     render();
     return;
   }
@@ -3037,7 +3218,7 @@ function onFocusOut(event) {
 function start() {
   const saved = loadState();
   db = saved || emptyState();
-  const firstLaunch = !db.courses.length;
+  const firstLaunch = !db.courses.length && !db.ready;
   if (firstLaunch) ensureStarterCourse();
   else if (!saved) persist();
   appEl.addEventListener("click", onClick);
@@ -3056,8 +3237,11 @@ function start() {
   window.addEventListener("resize", () => requestAnimationFrame(fitSeatTiles));
   const hash = location.hash || "";
   const bare = !hash || hash === "#" || hash === "#/";
-  if (bare || (firstLaunch && (hash === "#/new" || hash === "#/new/"))) {
-    const course = courseById(db.lastCourseId) || db.courses[0];
+  const course = courseById(db.lastCourseId) || db.courses[0];
+  if (!course) {
+    if (location.hash !== "#/new") location.hash = "#/new";
+    else render();
+  } else if (bare || (firstLaunch && (hash === "#/new" || hash === "#/new/"))) {
     location.hash = hrefFor(course.id, firstLaunch ? "setup" : "class");
   } else render();
   resumeGoogle();

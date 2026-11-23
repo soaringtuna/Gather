@@ -20,6 +20,13 @@ function normalizeExpectation(raw) {
   return { id: String(raw?.id || uid("exp")), label: label || detail, detail: detail || label, group: String(raw?.group || "") };
 }
 
+function audioSrc(value) {
+  const text = String(value || "");
+  if (text.startsWith("data:audio/")) return text;
+  if (text.startsWith("data:video/webm")) return text;
+  return "";
+}
+
 function normalizeEntry(raw) {
   const level = String(raw?.level ?? "");
   if (!raw?.studentId || !["conversation", "observation"].includes(raw.kind)) return null;
@@ -38,6 +45,7 @@ function normalizeEntry(raw) {
     percent: Number.isFinite(percent) ? Math.max(0, Math.min(100, Math.round(percent))) : 0,
     note: String(raw.note || ""),
     photo: String(raw.photo || "").startsWith("data:image/") ? String(raw.photo) : "",
+    audio: audioSrc(raw.audio),
     createdAt: String(raw.createdAt || new Date().toISOString()),
   };
 }
@@ -89,7 +97,7 @@ export function normalizeCourse(raw) {
 export function normalizeState(raw) {
   const courses = (Array.isArray(raw?.courses) ? raw.courses : []).map(normalizeCourse);
   const lastCourseId = courses.some((course) => course.id === raw?.lastCourseId) ? raw.lastCourseId : courses[0]?.id || null;
-  return { version: 3, lastCourseId, backupEmail: String(raw?.backupEmail || "").trim(), courses };
+  return { version: 3, lastCourseId, backupEmail: String(raw?.backupEmail || "").trim(), courses, ready: Boolean(raw?.ready) || courses.length > 0 };
 }
 
 export function loadState() {
@@ -109,5 +117,5 @@ export function saveState(state) {
 }
 
 export function emptyState() {
-  return { version: 3, lastCourseId: null, backupEmail: "", courses: [] };
+  return { version: 3, lastCourseId: null, backupEmail: "", courses: [], ready: false };
 }
