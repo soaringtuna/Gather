@@ -138,9 +138,9 @@ let announceClassFile = false;
 function lastSyncText() {
   const stored = localStorage.getItem("class-record-google-synced-at");
   const time = stored ? new Date(stored) : null;
-  if (!time || Number.isNaN(time.getTime())) return "Autosaved: Not Yet";
+  if (!time || Number.isNaN(time.getTime())) return "Saved: Not Yet";
   const formatted = time.toLocaleString("en-CA", { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-  return `Autosaved: ${formatted}`;
+  return `Saved: ${formatted}`;
 }
 
 function noteDriveSync() {
@@ -1061,7 +1061,7 @@ function shell(route, course, body) {
   const tabs = !capturing && (course || (!db.courses.length && ["class", "roster", "setup", "tools"].includes(route.name))) ? pageSwitch(course, route) : "";
   const heading = course ? "" : route.name === "new" ? "New Class" : route.name === "home" ? "Classes" : "";
   const courseLede = course
-    ? `${esc(course.semesterLabel || "Semester Not Set")} · Grade ${course.grade}${course.period ? ` · Period ${esc(course.period)}` : ""}`
+    ? `${esc(course.semesterLabel || "Semester Not Set")}${course.period ? ` · P${esc(course.period)}` : ""}`
     : "";
   const lede = course
     ? ""
@@ -1073,7 +1073,7 @@ function shell(route, course, body) {
   const title = heading ? `<div class="course-heading"><h1>${heading}</h1>${lede ? `<p class="lede">${lede}</p>` : ""}</div>` : "";
   const switcher = classSwitcher(course);
   const status = course
-    ? `<div class="status-row"><div class="status-lines">${courseLede ? `<p class="lede course-lede">${courseLede}</p>` : ""}<p class="sub sync-time noprint">${esc(lastSyncText())}</p></div><button type="button" class="sync-icon noprint" data-action="drive-pull" aria-label="Sync Classes with Google Drive" title="Sync Classes with Google Drive">${syncIcon()}<span>Sync</span></button></div>`
+    ? `<div class="status-row"><div class="status-lines">${courseLede ? `<p class="lede course-lede">${courseLede}</p>` : ""}<p class="sub sync-time noprint">${esc(lastSyncText())}</p></div><button type="button" class="sync-icon noprint" data-action="drive-pull" aria-label="Sync Data" title="Sync Classes with Google Drive">${syncIcon()}<span class="sync-label"><span>Sync</span><span>Data</span></span></button></div>`
     : "";
   const header = switcher || courseLede
     ? `<header class="appbar"><div class="class-panel">${switcher}${status}</div></header>`
@@ -1247,9 +1247,8 @@ function renderTools(course) {
     ? needClass
     : !students.length
       ? `<p>Add students in Class Setup, then pick from the list.</p>`
-      : `<div class="tool-stage${tools.lastStudent ? " is-landed" : ""}" aria-live="polite"><p class="tool-kicker">Student</p><p class="tool-name" id="student-spin">${esc(tools.lastStudent || "Pick a student")}</p></div>
+      : `<button type="button" class="tool-stage${tools.lastStudent ? " is-landed" : ""}" data-action="pick-student" aria-live="polite"><p class="tool-kicker">Student</p><p class="tool-name" id="student-spin">${esc(tools.lastStudent || "Select Student")}</p></button>
         <div class="picker-names">${students.map((student) => `<span class="${tools.pickedIds.includes(student.id) ? "is-picked" : ""}">${esc(studentName(student))}</span>`).join("")}</div>
-        <button type="button" class="primary full-button" data-action="pick-student">Pick a Student</button>
         <button type="button" class="ghost full-button" data-action="reset-student-picks">Start Over</button>
         <p class="sub">${tools.pickedIds.length} of ${students.length} picked this round.</p>`;
   const liveGroups = tools.groups
@@ -2763,16 +2762,17 @@ async function selectDriveFolder(button) {
   }
 }
 
-async function drivePull() {
+async function drivePull({ stay = false } = {}) {
   if (driveBusy) return;
   if (!googleAccountReady()) {
-    scrollToGoogleSetup();
+    if (stay) showToast("Sign in on Class Setup to sync with Google Drive.");
+    else scrollToGoogleSetup();
     return;
   }
   const folder = storedFolder();
   if (!folder) {
-    showToast("Choose a Google Drive folder below.");
-    scrollToGoogleSetup();
+    showToast(stay ? "Choose a Google Drive folder on Class Setup." : "Choose a Google Drive folder below.");
+    if (!stay) scrollToGoogleSetup();
     return;
   }
   driveBusy = true;
@@ -2807,7 +2807,9 @@ async function drivePull() {
         ? `Synced ${savedClasses.names.length} ${savedClasses.names.length === 1 ? "class" : "classes"} from ${folder.name}.${addedText || " Everything in the folder is already on this device."}`
         : `Synced the classes on this device with ${folder.name}.${addedText}`;
     showToast(message);
+    const place = stay ? window.scrollY : 0;
     render();
+    if (stay) requestAnimationFrame(() => window.scrollTo(0, place));
   } catch (error) {
     showToast(error.message || "The class files could not be read.");
   } finally {
@@ -2848,7 +2850,7 @@ async function onClick(event) {
   const course = courseById(route.courseId);
 
   if (action === "email-backup") return backupClassFiles();
-  if (action === "drive-pull") return drivePull();
+  if (action === "drive-pull") return drivePull({ stay: target.classList.contains("sync-icon") });
   if (action === "google-sign-in") {
     beginGoogleSignIn().catch((error) => showToast(error.message || "Google sign-in did not finish."));
     return;
