@@ -12,11 +12,13 @@
       const token = hash.get("access_token");
       const error = hash.get("error") || query.get("error");
       if (token) {
-        sessionStorage.setItem("class-record-google-access", JSON.stringify({
+        const saved = JSON.stringify({
           token,
           scope: hash.get("scope") || "",
           expires: Date.now() + (Number(hash.get("expires_in")) || 3600) * 1000,
-        }));
+        });
+        localStorage.setItem("class-record-google-access", saved);
+        sessionStorage.setItem("class-record-google-access", saved);
       }
       const idToken = hash.get("id_token");
       if (idToken) sessionStorage.setItem("class-record-google-id", idToken);

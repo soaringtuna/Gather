@@ -159,6 +159,13 @@ export function stateToCsv(state) {
         createdAt: entry.createdAt || "",
       }));
     }
+    for (const entryId of course.deletedEntryIds || []) {
+      lines.push(row({
+        type: "removed-entry",
+        courseId: course.id,
+        entryId,
+      }));
+    }
     for (const [studentId, mark] of Object.entries(course.marks || {})) {
       lines.push(row({
         type: "mark",
@@ -253,6 +260,7 @@ export function stateFromCsv(text) {
         behaviourExpectations: [],
         sessions: [],
         entries: [],
+        deletedEntryIds: [],
         marks: {},
       });
     }
@@ -322,6 +330,9 @@ export function stateFromCsv(text) {
         audio: value(record, "audio"),
         createdAt: value(record, "createdAt"),
       });
+    } else if (type === "removed-entry") {
+      const entryId = value(record, "entryId");
+      if (entryId) course.deletedEntryIds.push(entryId);
     } else if (type === "mark") {
       const studentId = value(record, "studentId");
       const percent = value(record, "markPercent");
@@ -353,6 +364,11 @@ export function stateFromCsv(text) {
         createdAt: value(record, "createdAt"),
       });
     }
+  }
+  for (const course of courses.values()) {
+    const removed = new Set(course.deletedEntryIds);
+    course.deletedEntryIds = [...removed];
+    course.entries = course.entries.filter((entry) => entry.id && !removed.has(entry.id));
   }
   return { courses: [...courses.values()] };
 }
@@ -487,10 +503,11 @@ function mergeCourse(local, remote) {
   const behaviour = mergeNamedItems(local.behaviourExpectations, remote.behaviourExpectations);
   const sessions = mergeSessions(local.sessions, remote.sessions);
   const expectationMap = new Map([...expectations.idMap, ...behaviour.idMap]);
-  const entries = copyList(local.entries);
-  const seen = new Map(entries.filter((entry) => entry.id).map((entry) => [entry.id, entry]));
+  const removed = new Set([...(local.deletedEntryIds || []), ...(remote.deletedEntryIds || [])]);
+  const entries = copyList(local.entries).filter((entry) => entry.id && !removed.has(entry.id));
+  const seen = new Map(entries.map((entry) => [entry.id, entry]));
   for (const remoteEntry of remote.entries || []) {
-    if (!remoteEntry.id) continue;
+    if (!remoteEntry.id || removed.has(remoteEntry.id)) continue;
     const entry = {
       ...remoteEntry,
       studentId: remap(remoteEntry.studentId, students.idMap),
@@ -517,6 +534,7 @@ function mergeCourse(local, remote) {
     behaviourExpectations: behaviour.items,
     sessions: sessions.sessions,
     entries,
+    deletedEntryIds: [...removed],
     marks: mergeMarks(local.marks, remote.marks, students.idMap),
   };
 }

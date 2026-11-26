@@ -70,6 +70,8 @@ export function normalizeCourse(raw) {
     student.seat = seat;
     usedSeats.add(seat);
   }
+  const deletedEntryIds = [...new Set((Array.isArray(raw?.deletedEntryIds) ? raw.deletedEntryIds : []).map((id) => String(id)).filter(Boolean))];
+  const removedEntries = new Set(deletedEntryIds);
   return {
     id: String(raw?.id || uid("course")),
     name: String(raw?.name || "Untitled course").trim() || "Untitled course",
@@ -89,7 +91,8 @@ export function normalizeCourse(raw) {
     expectationsManaged: Boolean(raw?.expectationsManaged),
     curriculumCitation: String(raw?.curriculumCitation || "").trim().slice(0, 400),
     sessions: Array.isArray(raw?.sessions) ? raw.sessions : [],
-    entries: (Array.isArray(raw?.entries) ? raw.entries : []).map(normalizeEntry).filter(Boolean),
+    deletedEntryIds,
+    entries: (Array.isArray(raw?.entries) ? raw.entries : []).map(normalizeEntry).filter((entry) => entry && !removedEntries.has(entry.id)),
     marks: raw?.marks && typeof raw.marks === "object" ? raw.marks : {},
   };
 }

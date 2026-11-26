@@ -7,8 +7,11 @@ const RETURN_PAGE = "/google-return.html";
 const PENDING_KEY = "class-record-google-pending";
 const RETURN_KEY = "class-record-google-return";
 const ACCESS_KEY = "class-record-google-access";
+const ACCOUNT_KEY = "class-record-google-account";
 const ERROR_KEY = "class-record-google-error";
 const ID_KEY = "class-record-google-id";
+let refreshTimer = 0;
+let restorePromise = null;
 
 function loadScript(src) {
   return new Promise((resolve, reject) => {
@@ -52,7 +55,7 @@ function redirectFor(scope, pending, prompt) {
   url.searchParams.set("response_type", "token");
   url.searchParams.set("scope", scope);
   url.searchParams.set("include_granted_scopes", "true");
-  const email = sessionStorage.getItem("class-record-google-account");
+  const email = googleAccountEmail();
   if (email) url.searchParams.set("login_hint", email);
   if (prompt) url.searchParams.set("prompt", prompt);
   location.assign(url);
@@ -63,14 +66,140 @@ export function beginGoogleSignIn() {
   return redirectFor(IDENTITY, "email", "select_account");
 }
 
-export function storedGoogleToken() {
+function readStored(key) {
+  return localStorage.getItem(key) || sessionStorage.getItem(key) || "";
+}
+
+export function googleAccountEmail() {
+  const email = readStored(ACCOUNT_KEY);
+  if (email && localStorage.getItem(ACCOUNT_KEY) !== email) localStorage.setItem(ACCOUNT_KEY, email);
+  return email;
+}
+
+export function rememberGoogleAccount(email) {
+  const clean = String(email || "").trim();
+  if (!clean) return;
+  localStorage.setItem(ACCOUNT_KEY, clean);
+  sessionStorage.setItem(ACCOUNT_KEY, clean);
+}
+
+function readAccessRecord() {
   try {
-    const saved = JSON.parse(sessionStorage.getItem(ACCESS_KEY) || "");
-    if (!saved?.token || saved.expires < Date.now() + 15000) return null;
+    const raw = readStored(ACCESS_KEY);
+    if (!raw) return null;
+    const saved = JSON.parse(raw);
+    if (!saved?.token) return null;
+    if (localStorage.getItem(ACCESS_KEY) !== raw) localStorage.setItem(ACCESS_KEY, raw);
     return saved;
   } catch {
     return null;
   }
+}
+
+function writeAccess(saved) {
+  const raw = JSON.stringify(saved);
+  localStorage.setItem(ACCESS_KEY, raw);
+  sessionStorage.setItem(ACCESS_KEY, raw);
+  scheduleRefresh(saved);
+  window.dispatchEvent(new Event("google-access-ready"));
+}
+
+function markAccessExpired() {
+  const saved = readAccessRecord();
+  clearTimeout(refreshTimer);
+  if (saved) {
+    saved.expires = 0;
+    const raw = JSON.stringify(saved);
+    localStorage.setItem(ACCESS_KEY, raw);
+    sessionStorage.setItem(ACCESS_KEY, raw);
+  }
+  window.dispatchEvent(new Event("google-access-ended"));
+}
+
+function scheduleRefresh(saved) {
+  clearTimeout(refreshTimer);
+  if (!saved?.expires) return;
+  const delay = Math.max(5000, saved.expires - Date.now() - 60000);
+  refreshTimer = setTimeout(() => {
+    const email = googleAccountEmail();
+    const previous = readAccessRecord();
+    const wanted = String(previous?.scope || "");
+    const scope = wanted.split(/\s+/).includes(DRIVE) ? `${IDENTITY} ${DRIVE}` : IDENTITY;
+    silentToken(scope, email).then((saved) => {
+      if (!saved && scope !== IDENTITY) return silentToken(IDENTITY, email);
+      return saved;
+    });
+  }, delay);
+}
+
+export function storedGoogleToken() {
+  const saved = readAccessRecord();
+  if (!saved?.token || saved.expires < Date.now() + 15000) return null;
+  scheduleRefresh(saved);
+  return saved;
+}
+
+function loadGsi() {
+  return loadScript("https://accounts.google.com/gsi/client");
+}
+
+function silentToken(scope, email) {
+  return loadGsi().then(() => new Promise((resolve) => {
+    if (!window.google?.accounts?.oauth2) {
+      resolve(null);
+      return;
+    }
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const client = window.google.accounts.oauth2.initTokenClient({
+      client_id: CLIENT_ID,
+      scope,
+      include_granted_scopes: true,
+      hint: email || undefined,
+      callback: (response) => {
+        if (!response || response.error || !response.access_token) {
+          finish(null);
+          return;
+        }
+        const saved = {
+          token: response.access_token,
+          scope: response.scope || scope,
+          expires: Date.now() + (Number(response.expires_in) || 3600) * 1000,
+        };
+        writeAccess(saved);
+        finish(saved);
+      },
+      error_callback: () => finish(null),
+    });
+    setTimeout(() => finish(null), 8000);
+    try {
+      client.requestAccessToken({ prompt: "" });
+    } catch {
+      finish(null);
+    }
+  }));
+}
+
+export function restoreGoogleSession() {
+  const current = storedGoogleToken();
+  if (current) return Promise.resolve(current);
+  if (restorePromise) return restorePromise;
+  const previous = readAccessRecord();
+  const email = googleAccountEmail();
+  if (!previous && !email) return Promise.resolve(null);
+  const wanted = String(previous?.scope || "");
+  const scope = wanted.split(/\s+/).includes(DRIVE) ? `${IDENTITY} ${DRIVE}` : IDENTITY;
+  restorePromise = silentToken(scope, email).then((saved) => {
+    if (saved || scope === IDENTITY) return saved;
+    return silentToken(IDENTITY, email);
+  }).finally(() => {
+    restorePromise = null;
+  });
+  return restorePromise;
 }
 
 export function canListDrive(scope = "") {
@@ -126,6 +255,11 @@ export async function takeGoogleResult() {
   }
 }
 
+async function driveFailure(response, fallback) {
+  if (response.status === 401) markAccessExpired();
+  return new Error(await driveMessage(response, fallback));
+}
+
 async function driveMessage(response, fallback = "The backup could not be saved.") {
   try {
     const body = await response.json();
@@ -152,7 +286,7 @@ export async function listFolders(token, parentId, pageToken = "") {
   url.searchParams.set("spaces", "drive");
   if (pageToken) url.searchParams.set("pageToken", pageToken);
   const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-  if (!response.ok) throw new Error(await driveMessage(response));
+  if (!response.ok) throw await driveFailure(response);
   const body = await response.json();
   return {
     folders: (body.files || []).map((file) => ({ id: file.id, name: file.name || "Folder" })),
@@ -175,7 +309,7 @@ export async function createDriveFolder(token, parentId, name) {
       parents: [folderParent(parentId)],
     }),
   });
-  if (!response.ok) throw new Error(await driveMessage(response));
+  if (!response.ok) throw await driveFailure(response);
   const folder = await response.json();
   return { id: folder.id, name: folder.name || clean };
 }
@@ -189,7 +323,7 @@ async function uploadCsv(token, folderId, name, csv) {
   const listed = await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id)&pageSize=1`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!listed.ok) throw new Error(await driveMessage(listed));
+  if (!listed.ok) throw await driveFailure(listed);
   const existing = (await listed.json()).files?.[0];
   const boundary = `class-record-${Date.now()}`;
   const meta = existing ? { name } : { name, parents: [folderId] };
@@ -205,7 +339,7 @@ async function uploadCsv(token, folderId, name, csv) {
     },
     body,
   });
-  if (!saved.ok) throw new Error(await driveMessage(saved));
+  if (!saved.ok) throw await driveFailure(saved);
 }
 
 export function takePickedFolder() {
@@ -239,7 +373,7 @@ export async function listCsvFiles(token, folderId) {
     url.searchParams.set("spaces", "drive");
     if (pageToken) url.searchParams.set("pageToken", pageToken);
     const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-    if (!response.ok) throw new Error(await driveMessage(response, "The class files could not be read."));
+    if (!response.ok) throw await driveFailure(response, "The class files could not be read.");
     const body = await response.json();
     for (const file of body.files || []) {
       const name = String(file.name || "");
@@ -256,6 +390,6 @@ export async function downloadDriveFile(token, fileId) {
   const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!response.ok) throw new Error(await driveMessage(response, "The class files could not be read."));
+  if (!response.ok) throw await driveFailure(response, "The class files could not be read.");
   return response.text();
 }

@@ -1,7 +1,7 @@
-import { classCsvName, courseToCsv, coursesOnlyInFolder, mergeCourses, stateFromCsv } from "./csv.js?v=14";
-import { beginDriveFolder, beginGoogleSignIn, canListDrive, createDriveFolder, downloadDriveFile, listCsvFiles, listFolders, storedGoogleToken, takeGoogleResult, takePickedFolder, uploadToFolder } from "./drive.js?v=15";
+import { classCsvName, courseToCsv, coursesOnlyInFolder, mergeCourses, stateFromCsv } from "./csv.js?v=15";
+import { beginDriveFolder, beginGoogleSignIn, canListDrive, createDriveFolder, downloadDriveFile, googleAccountEmail, listCsvFiles, listFolders, rememberGoogleAccount, restoreGoogleSession, storedGoogleToken, takeGoogleResult, takePickedFolder, uploadToFolder } from "./drive.js?v=16";
 import { expectationsForCode, findOntarioCourse, searchOntarioCourses } from "./ontario.js?v=18";
-import { emptyState, loadState, normalizeCourse, normalizeState, saveState } from "./store.js?v=10";
+import { emptyState, loadState, normalizeCourse, normalizeState, saveState } from "./store.js?v=11";
 import {
   KINDS,
   LEVELS,
@@ -45,6 +45,24 @@ let ui = {
   entriesOpen: {},
   checkpointDraft: {},
 };
+const tools = {
+  open: "",
+  pickedIds: [],
+  lastStudent: "",
+  groupCount: 2,
+  groups: [],
+  pickedGroup: -1,
+  timerSet: 60,
+  timerLeft: 60,
+  timerRunning: false,
+  timerEndsAt: 0,
+  timerDone: false,
+  numberMin: 1,
+  numberMax: 20,
+  number: "",
+  wordTopic: "",
+  word: "",
+};
 let toastTimer = 0;
 let drag = null;
 let ignoreClick = false;
@@ -52,6 +70,7 @@ let loadCourseCode = "";
 let loadingExpectations = false;
 let scrollTilesToTop = false;
 let scrollEntryDetails = false;
+let scrollStudentEntries = "";
 let scrollSetupFold = "";
 
 function esc(value) {
@@ -103,6 +122,14 @@ function persist() {
   scheduleDriveSync();
 }
 
+function forgetEntries(course, entries) {
+  const ids = entries.map((entry) => entry?.id).filter(Boolean);
+  if (!ids.length) return;
+  const removed = new Set([...(course.deletedEntryIds || []), ...ids]);
+  course.deletedEntryIds = [...removed];
+  course.entries = course.entries.filter((entry) => !removed.has(entry.id));
+}
+
 let driveSyncTimer = 0;
 let driveSyncQueued = false;
 let driveBusy = false;
@@ -138,6 +165,7 @@ async function autoDriveSync({ prompt = false } = {}) {
   }
   const announce = announceClassFile;
   announceClassFile = false;
+  if (!db.courses.length) return;
   if (!googleAccountReady()) {
     if (announce) remindToSyncNewClass();
     if (prompt) {
@@ -184,7 +212,7 @@ async function autoDriveSync({ prompt = false } = {}) {
 }
 
 function googleAccountReady() {
-  return Boolean(googleEmail(sessionStorage.getItem("class-record-google-account")));
+  return Boolean(storedGoogleToken()?.token);
 }
 
 function alertAction(message) {
@@ -217,7 +245,10 @@ function remindToSyncNewClass() {
 }
 
 function scrollToGoogleSetup() {
-  document.getElementById("google-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const panel = document.getElementById("google-panel");
+  if (!panel) return;
+  if (!panel.open) panel.open = true;
+  panel.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function expectationDescription(detail) {
@@ -412,14 +443,9 @@ function exclusiveFocus(course) {
 function expectationMenu(course, selectedId) {
   const curriculum = curriculumFor(course);
   const items = loadedExpectations(course);
-  const options = (list) => list.map((item) => `<option value="${esc(item.id)}" ${item.id === selectedId ? "selected" : ""}>${esc(item.label)}</option>`).join("");
-  const grouped = new Map();
-  for (const item of items) {
-    const name = item.group || "Added for this class";
-    if (!grouped.has(name)) grouped.set(name, []);
-    grouped.get(name).push(item);
-  }
-  const html = [...grouped.entries()].map(([name, list]) => `<optgroup label="${esc(name)}">${options(list)}</optgroup>`).join("");
+  const html = items
+    .map((item) => `<option value="${esc(item.id)}" ${item.id === selectedId ? "selected" : ""}>${esc(item.label || item.detail)}</option>`)
+    .join("");
   const learningSkills = items.some((item) => String(item.id).startsWith("ls-"));
   const others = items.some((item) => !String(item.id).startsWith("ls-"));
   const growing = "Growing Success: Assessment, Evaluation, and Reporting in Ontario Schools, 2010";
@@ -691,12 +717,13 @@ function parseRoute() {
   const params = new URLSearchParams(queryAt === -1 ? "" : hash.slice(queryAt + 1));
   const parts = path.split("/").filter(Boolean).map(decodeURIComponent);
   if (parts[0] === "new") return { name: "new" };
+  if (["class", "roster", "setup", "tools"].includes(parts[0]) && parts.length === 1) return { name: parts[0] };
   if (parts[0] === "c" && parts[1]) {
     const courseId = parts[1];
     const page = parts[2] || "class";
     if (page === "capture" && parts[3]) return { name: "capture", courseId, studentId: parts[3], entryId: parts[4] || null, returnTo: params.get("return") || "" };
     if (page === "s" && parts[3]) return { name: "student", courseId, studentId: parts[3] };
-    if (["class", "roster", "setup"].includes(page)) return { name: page, courseId };
+    if (["class", "roster", "setup", "tools"].includes(page)) return { name: page, courseId };
     return { name: "class", courseId };
   }
   return { name: "home" };
@@ -711,7 +738,7 @@ let keptTab = "class";
 function tabName(route = parseRoute()) {
   if (route.name === "student") return "roster";
   if (route.name === "capture") return "class";
-  if (["class", "roster", "setup"].includes(route.name)) return route.name;
+  if (["class", "roster", "setup", "tools"].includes(route.name)) return route.name;
   return "";
 }
 
@@ -738,11 +765,18 @@ function ensureSession(course, date) {
   return session;
 }
 
+function isUserExpectation(item) {
+  return Boolean(item && String(item.id).startsWith("exp-"));
+}
+
 function expectationReady(course, capture) {
   if (!capture) return false;
   if (capture.record === "behaviour") return Boolean(knownBehaviour(course, capture.expectationId));
   if (capture.expectationId === "custom") return capture.customText.trim().length > 0;
-  return Boolean(knownExpectation(course, capture.expectationId));
+  const found = knownExpectation(course, capture.expectationId);
+  if (!found) return false;
+  if (isUserExpectation(found)) return capture.customText.trim().length > 0;
+  return true;
 }
 
 function classDraft(courseId) {
@@ -800,8 +834,12 @@ function render() {
     location.hash = hrefFor(ensureStarterCourse().id, "setup");
     return;
   }
+  if (!db.courses.length && route.courseId) {
+    location.hash = `#/${tabName(route) || "setup"}`;
+    return;
+  }
   if (!db.courses.length && route.name === "home") {
-    location.hash = "#/new";
+    location.hash = "#/setup";
     return;
   }
   const tab = tabName(route);
@@ -847,11 +885,14 @@ function paint(route, course) {
     return;
   }
   let body = "";
-  if (route.name === "home") body = renderHome();
+  if (!course && (route.name === "class" || route.name === "roster")) body = renderNoClass(route.name);
+  else if (!course && route.name === "setup") body = renderEmptySetup();
+  else if (route.name === "home") body = renderHome();
   else if (route.name === "new") body = renderNewCourse();
   else if (route.name === "class") body = renderClass(course);
   else if (route.name === "roster") body = renderRoster(course);
   else if (route.name === "setup") body = renderSetup(course);
+  else if (route.name === "tools") body = renderTools(course);
   else if (route.name === "capture") {
     const student = studentById(course, route.studentId);
     body = student && ui.capture
@@ -866,6 +907,7 @@ function paint(route, course) {
   const alignTiles = scrollTilesToTop && route.name === "class";
   const alignEntry = scrollEntryDetails && route.name === "class";
   const alignFold = scrollSetupFold;
+  const alignStudentEntries = scrollStudentEntries && route.name === "student" && route.studentId === scrollStudentEntries ? scrollStudentEntries : "";
   appEl.innerHTML = shell(route, course, body);
   requestAnimationFrame(() => {
     fitSeatTiles();
@@ -881,6 +923,11 @@ function paint(route, course) {
       scrollSetupFold = "";
       scrollFoldBelowBar(alignFold);
     }
+    if (alignStudentEntries) {
+      scrollStudentEntries = "";
+      scrollStudentEntriesBelowBar(alignStudentEntries);
+    }
+    ensureTimerLoop();
   });
 }
 
@@ -896,8 +943,7 @@ function scrollStudentListToTop() {
   scrollPanelBelowBar(document.querySelector(".seat-plan"));
 }
 
-function scrollFoldBelowBar(foldId) {
-  const panel = document.querySelector(`.setup-fold[data-fold="${CSS.escape(foldId)}"]`);
+function scrollOpenedPanel(panel) {
   if (!panel) return;
   const bar = document.querySelector(".appbar");
   const offset = bar ? bar.getBoundingClientRect().height : 0;
@@ -910,6 +956,14 @@ function scrollFoldBelowBar(foldId) {
     page.getBoundingClientRect();
   }
   window.scrollTo(0, Math.max(0, target));
+}
+
+function scrollFoldBelowBar(foldId) {
+  scrollOpenedPanel(document.querySelector(`.setup-fold[data-fold="${CSS.escape(foldId)}"]`));
+}
+
+function scrollStudentEntriesBelowBar(studentId) {
+  scrollOpenedPanel(document.querySelector(`.entry-fold[data-entries="${CSS.escape(studentId)}"]`));
 }
 
 function scrollEntryPanelToTop() {
@@ -1004,22 +1058,25 @@ function classSwitcher(course) {
 
 function shell(route, course, body) {
   const capturing = route.name === "capture";
-  const tabs = course && !capturing ? pageSwitch(course, route) : "";
-  const heading = course ? "" : route.name === "new" ? "New Class" : "Classes";
+  const tabs = !capturing && (course || (!db.courses.length && ["class", "roster", "setup", "tools"].includes(route.name))) ? pageSwitch(course, route) : "";
+  const heading = course ? "" : route.name === "new" ? "New Class" : route.name === "home" ? "Classes" : "";
   const courseLede = course
     ? `${esc(course.semesterLabel || "Semester Not Set")} · Grade ${course.grade}${course.period ? ` · Period ${esc(course.period)}` : ""}`
     : "";
   const lede = course
     ? ""
     : route.name === "new"
-      ? "Search the Ontario course code (or first letters), then choose the course from the drop down. Expectations will come from that chosen Curriculum."
+      ? "Search the course code (or a single keyword), then choose the course from the drop down. Expectations will come from that chosen curriculum."
       : db.courses.length
         ? "Choose the active class above. Several classes can stay on this device."
         : "";
   const title = heading ? `<div class="course-heading"><h1>${heading}</h1>${lede ? `<p class="lede">${lede}</p>` : ""}</div>` : "";
   const switcher = classSwitcher(course);
+  const status = course
+    ? `<div class="status-row"><div class="status-lines">${courseLede ? `<p class="lede course-lede">${courseLede}</p>` : ""}<p class="sub sync-time noprint">${esc(lastSyncText())}</p></div><button type="button" class="sync-icon noprint" data-action="drive-pull" aria-label="Sync Classes with Google Drive" title="Sync Classes with Google Drive">${syncIcon()}<span>Sync</span></button></div>`
+    : "";
   const header = switcher || courseLede
-    ? `<header class="appbar"><div class="class-panel">${switcher}${courseLede ? `<p class="lede course-lede">${courseLede}</p>` : ""}${course ? `<p class="sub sync-time noprint">${esc(lastSyncText())}</p>` : ""}</div></header>`
+    ? `<header class="appbar"><div class="class-panel">${switcher}${status}</div></header>`
     : "";
   return `<div class="shell ${capturing ? "is-capture" : ""}">
     ${brandBanner()}
@@ -1037,14 +1094,367 @@ function pageSwitch(course, route) {
     ["class", "DATA ENTRY", "page-entry"],
     ["roster", "GATHERED EVIDENCE", "page-evidence"],
     ["setup", "CLASS SETUP", "page-setup"],
+    ["tools", "TOOLS", "page-tools"],
   ];
   const active = pages.find(([page]) => page === current) || pages[0];
   const items = pages
     .filter(([page]) => page !== current)
-    .map(([page, label, tone]) => `<a class="${tone}" href="${hrefFor(course.id, page)}">${label}</a>`)
+    .map(([page, label, tone]) => `<a class="${tone}" href="${course ? hrefFor(course.id, page) : `#/${page}`}">${label}</a>`)
     .join("");
-  const hint = active[0] === "class" ? `<p class="page-hint">Choose an expectation, tap a student tile.</p>` : "";
+  const hint = active[0] === "class" && course ? `<p class="page-hint">Choose an expectation, tap a student tile.</p>` : "";
   return `<nav class="tabs" aria-label="Course"><details class="page-drop"><summary class="${active[2]}">${active[1]}</summary>${items}</details>${hint}</nav>`;
+}
+
+function renderNoClass(page) {
+  const title = page === "roster" ? "Gathered Evidence" : "Data Entry";
+  return `<section class="card stack"><h1>${title}</h1><p>Go to Class Setup and create a class.</p><a class="primary setup-add" href="#/setup">Class Setup</a></section>`;
+}
+
+function renderEmptySetup() {
+  return `<div class="stack">
+    <section class="card stack"><p>Create a class to get started.</p><a class="primary setup-add" href="#/new">Create a New Class</a></section>
+    ${googlePanel()}
+    ${backupPanel()}
+  </div>`;
+}
+
+const WORD_LISTS = {
+  animal: ["otter", "fox", "whale", "eagle", "frog", "panda", "shark", "rabbit", "owl", "tiger", "turtle", "penguin", "horse", "wolf", "bee", "dolphin", "bear", "moose", "heron", "lynx"],
+  science: ["atom", "energy", "magnet", "cell", "orbit", "gravity", "mineral", "habitat", "force", "mixture", "planet", "circuit", "fossil", "density", "ecosystem", "molecule", "voltage", "erosion", "prism", "nucleus"],
+  math: ["angle", "fraction", "factor", "graph", "radius", "percent", "prime", "vertex", "ratio", "equation", "area", "volume", "pattern", "integer", "axis", "median", "product", "symmetry", "coordinate", "estimate"],
+  food: ["apple", "bread", "rice", "soup", "carrot", "yogurt", "pasta", "cheese", "bean", "mango", "oat", "pepper", "egg", "corn", "berry", "noodle", "potato", "melon", "cereal", "fish"],
+  color: ["red", "blue", "yellow", "green", "orange", "purple", "pink", "brown", "black", "white", "teal", "gold", "silver", "navy", "maroon", "violet", "indigo", "gray", "cream", "lime"],
+  weather: ["rain", "snow", "wind", "cloud", "storm", "sun", "fog", "hail", "breeze", "thunder", "drizzle", "frost", "humidity", "lightning", "rainbow", "sleet", "cyclone", "overcast", "sunshine", "mist"],
+  space: ["moon", "star", "comet", "orbit", "galaxy", "rocket", "meteor", "nebula", "saturn", "eclipse", "asteroid", "cosmos", "gravity", "telescope", "solar", "crater", "astronaut", "constellation", "jupiter", "vacuum"],
+  sport: ["soccer", "hockey", "swim", "track", "tennis", "basketball", "ski", "volley", "baseball", "cycling", "rowing", "skate", "golf", "badminton", "curl", "relay", "sprint", "goal", "pass", "serve"],
+  music: ["rhythm", "melody", "chorus", "beat", "tempo", "note", "chord", "drum", "violin", "piano", "harmony", "lyric", "bridge", "scale", "rest", "ensemble", "refrain", "acoustic", "pitch", "composer"],
+  geography: ["river", "island", "mountain", "coast", "desert", "valley", "lake", "border", "capital", "ocean", "plateau", "harbor", "glacier", "peninsula", "equator", "delta", "canyon", "prairie", "reef", "summit"],
+};
+
+function shuffle(list) {
+  const copy = [...list];
+  for (let index = copy.length - 1; index > 0; index -= 1) {
+    const swap = Math.floor(Math.random() * (index + 1));
+    [copy[index], copy[swap]] = [copy[swap], copy[index]];
+  }
+  return copy;
+}
+
+function clockText(total) {
+  const seconds = Math.max(0, Math.round(Number(total) || 0));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function timerRemaining() {
+  if (!tools.timerRunning) return tools.timerLeft;
+  return Math.max(0, Math.ceil((tools.timerEndsAt - Date.now()) / 1000));
+}
+
+let timerHandle = 0;
+
+function paintTimer() {
+  const readout = document.getElementById("tool-timer");
+  if (!readout) return;
+  const left = timerRemaining();
+  readout.textContent = clockText(left);
+  readout.closest(".tool-stage")?.classList.toggle("is-done", Boolean(tools.timerDone));
+  if (tools.timerRunning && left <= 0) {
+    tools.timerRunning = false;
+    tools.timerLeft = 0;
+    tools.timerDone = true;
+    clearInterval(timerHandle);
+    timerHandle = 0;
+    readout.textContent = "0:00";
+    readout.closest(".tool-stage")?.classList.add("is-done");
+    const label = document.getElementById("timer-toggle");
+    if (label) label.textContent = "Start";
+  }
+}
+
+function ensureTimerLoop() {
+  if (!tools.timerRunning) {
+    paintTimer();
+    return;
+  }
+  if (timerHandle) return;
+  timerHandle = setInterval(paintTimer, 200);
+  paintTimer();
+}
+
+function stopTimer() {
+  if (tools.timerRunning) tools.timerLeft = timerRemaining();
+  tools.timerRunning = false;
+  clearInterval(timerHandle);
+  timerHandle = 0;
+}
+
+function setTimerDuration(seconds) {
+  const next = Math.max(0, Math.round(seconds));
+  stopTimer();
+  tools.timerDone = false;
+  tools.timerSet = next;
+  tools.timerLeft = next;
+  render();
+}
+
+let toolSpin = 0;
+
+function stopToolSpin() {
+  cancelAnimationFrame(toolSpin);
+  toolSpin = 0;
+}
+
+function runToolSpin(elementId, labels, finalLabel, done) {
+  stopToolSpin();
+  const node = document.getElementById(elementId);
+  const stage = node?.closest(".tool-stage");
+  stage?.classList.add("is-spinning");
+  stage?.classList.remove("is-landed", "is-done");
+  let last = 0;
+  let gap = 45;
+  const started = performance.now();
+  const step = (now) => {
+    const current = document.getElementById(elementId);
+    if (!current) return;
+    const progress = Math.min(1, (now - started) / 2200);
+    if (now - last >= gap) {
+      current.textContent = labels[Math.floor(Math.random() * labels.length)];
+      last = now;
+      gap = 40 + progress * progress * 340;
+    }
+    if (progress < 1) toolSpin = requestAnimationFrame(step);
+    else {
+      current.textContent = finalLabel;
+      const landed = current.closest(".tool-stage");
+      landed?.classList.remove("is-spinning");
+      landed?.classList.add("is-landed");
+      toolSpin = 0;
+      done();
+    }
+  };
+  toolSpin = requestAnimationFrame(step);
+}
+
+function toolFold(id, title, body) {
+  const open = tools.open === id ? " open" : "";
+  return `<details class="card tool-fold" data-tool="${esc(id)}"${open}><summary>${esc(title)}</summary><div class="tool-body">${body}</div></details>`;
+}
+
+function renderTools(course) {
+  const students = course ? sortedStudents(course) : [];
+  const needClass = `<p>Go to Class Setup and create a class.</p><a class="primary setup-add" href="${course ? hrefFor(course.id, "setup") : "#/setup"}">Class Setup</a>`;
+  const pickerBody = !course
+    ? needClass
+    : !students.length
+      ? `<p>Add students in Class Setup, then pick from the list.</p>`
+      : `<div class="tool-stage${tools.lastStudent ? " is-landed" : ""}" aria-live="polite"><p class="tool-kicker">Student</p><p class="tool-name" id="student-spin">${esc(tools.lastStudent || "Pick a student")}</p></div>
+        <div class="picker-names">${students.map((student) => `<span class="${tools.pickedIds.includes(student.id) ? "is-picked" : ""}">${esc(studentName(student))}</span>`).join("")}</div>
+        <button type="button" class="primary full-button" data-action="pick-student">Pick a Student</button>
+        <button type="button" class="ghost full-button" data-action="reset-student-picks">Start Over</button>
+        <p class="sub">${tools.pickedIds.length} of ${students.length} picked this round.</p>`;
+  const liveGroups = tools.groups
+    .map((ids) => ids.map((id) => studentById(course, id)).filter(Boolean))
+    .filter((group) => group.length);
+  const groupBody = !course
+    ? needClass
+    : !students.length
+      ? `<p>Add students in Class Setup, then make groups.</p>`
+      : `<label class="field">Number of Groups<input id="group-count" type="number" min="2" max="${students.length}" step="1" value="${tools.groupCount}" /></label>
+        <button type="button" class="primary full-button" data-action="make-groups">Make Groups</button>
+        ${liveGroups.length ? `<div class="group-grid">${liveGroups.map((group, index) => `<article class="group-card${index === tools.pickedGroup ? " is-picked" : ""}"><h3>Group ${index + 1}</h3><ul>${group.map((student) => `<li>${esc(studentName(student))}</li>`).join("")}</ul></article>`).join("")}</div>
+        <div class="tool-stage${tools.pickedGroup >= 0 ? " is-landed" : ""}" aria-live="polite"><p class="tool-kicker">Group</p><p class="tool-name" id="group-spin">${tools.pickedGroup >= 0 ? `Group ${tools.pickedGroup + 1}` : "Pick a group"}</p></div>
+        <button type="button" class="primary full-button" data-action="pick-group">Pick a Group</button>` : `<p class="sub">Make groups, then pick one at random.</p>`}`;
+  const timerMinutes = Math.floor(tools.timerSet / 60);
+  const timerSeconds = tools.timerSet % 60;
+  const timerBody = `<div class="timer-presets">${[[30, "30 sec"], [60, "1 min"], [120, "2 min"], [300, "5 min"], [600, "10 min"]].map(([seconds, label]) => `<button type="button" class="ghost${tools.timerSet === seconds ? " is-selected" : ""}" data-action="set-timer" data-seconds="${seconds}">${label}</button>`).join("")}</div>
+    <div class="row">
+      <label class="field">Minutes<input id="timer-minutes" type="number" min="0" max="180" step="1" value="${timerMinutes}" /></label>
+      <label class="field">Seconds<input id="timer-seconds" type="number" min="0" max="59" step="1" value="${timerSeconds}" /></label>
+    </div>
+    <button type="button" class="ghost full-button" data-action="set-custom-timer">Set Custom Time</button>
+    <div class="tool-stage${tools.timerDone ? " is-done" : ""}" aria-live="polite"><p class="tool-kicker">${tools.timerDone ? "Time is up" : "Timer"}</p><p class="tool-name" id="tool-timer">${clockText(timerRemaining())}</p></div>
+    <button type="button" class="primary full-button" id="timer-toggle" data-action="toggle-timer">${tools.timerRunning ? "Pause" : "Start"}</button>
+    <button type="button" class="ghost full-button" data-action="reset-timer">Reset</button>`;
+  const numberBody = `<div class="row">
+      <label class="field">From<input id="number-min" type="number" step="1" value="${tools.numberMin}" /></label>
+      <label class="field">To<input id="number-max" type="number" step="1" value="${tools.numberMax}" /></label>
+    </div>
+    <div class="tool-stage${tools.number !== "" ? " is-landed" : ""}" aria-live="polite"><p class="tool-kicker">Number</p><p class="tool-name" id="number-spin">${esc(tools.number === "" ? "Pick a number" : String(tools.number))}</p></div>
+    <button type="button" class="primary full-button" data-action="pick-number">Pick a Number</button>`;
+  const wordBody = `<label class="field">Topic<input id="word-topic" type="text" value="${esc(tools.wordTopic)}" placeholder="Leave blank, or type any topic" /></label>
+    <p class="sub">Leave this blank for any dictionary word, or type a topic such as animal, castle, or science.</p>
+    <div class="tool-stage${tools.word ? " is-landed" : ""}" aria-live="polite"><p class="tool-kicker">Word</p><p class="tool-name" id="word-spin">${esc(tools.word || "Pick a word")}</p></div>
+    <button type="button" class="primary full-button" data-action="pick-word">Pick a Word</button>`;
+  return `<div class="stack">
+    ${toolFold("picker", "RANDOM STUDENT", pickerBody)}
+    ${toolFold("groups", "GROUP MAKER", groupBody)}
+    ${toolFold("timers", "TIMERS", timerBody)}
+    ${toolFold("number", "RANDOM NUMBER", numberBody)}
+    ${toolFold("word", "RANDOM WORD", wordBody)}
+  </div>`;
+}
+
+const GENERAL_WORDS = ["river", "garden", "bridge", "market", "window", "forest", "pencil", "circle", "silver", "journey", "candle", "harbor", "puzzle", "meadow", "lantern", "compass", "orchard", "marble", "thunder", "village", "beacon", "harvest", "mirror", "summit", "canvas", "pebble", "voyage", "library", "shadow", "anchor"];
+const TOPIC_ALIASES = { maths: "math", colours: "color", colors: "color", animals: "animal", sports: "sport" };
+const wordCache = new Map();
+let wordRequest = 0;
+
+function localTopicWords(topic) {
+  const clean = String(topic || "").trim().toLowerCase();
+  const name = TOPIC_ALIASES[clean] || clean;
+  return WORD_LISTS[name] || [];
+}
+
+function usableWords(list) {
+  const seen = new Set();
+  const words = [];
+  list.forEach((word) => {
+    const text = String(word || "").trim().toLowerCase();
+    if (!/^[a-z][a-z' -]{1,24}$/.test(text) || seen.has(text)) return;
+    seen.add(text);
+    words.push(text);
+  });
+  return words;
+}
+
+async function readWordJson(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error("dictionary");
+  return response.json();
+}
+
+async function randomDictionaryWords() {
+  try {
+    const data = await readWordJson("https://getrandomword.com/api/random-word?count=40&safe=true");
+    const words = usableWords((data.words || []).map((item) => item.word));
+    if (words.length) return words;
+  } catch {
+    /* The saved list covers a dropped connection. */
+  }
+  return GENERAL_WORDS;
+}
+
+async function topicDictionaryWords(topic) {
+  const encoded = encodeURIComponent(topic);
+  const [means, triggers] = await Promise.all([
+    readWordJson(`https://api.datamuse.com/words?ml=${encoded}&max=40`).catch(() => null),
+    readWordJson(`https://api.datamuse.com/words?rel_trg=${encoded}&max=30`).catch(() => null),
+  ]);
+  const remote = [...(means || []), ...(triggers || [])].map((row) => row.word);
+  const words = usableWords([...remote, ...localTopicWords(topic)]).filter((word) => word !== topic);
+  if (words.length) return words;
+  if (!means && !triggers) throw new Error("offline");
+  throw new Error("empty");
+}
+
+async function dictionaryWords(topic) {
+  const clean = String(topic || "").trim().toLowerCase();
+  if (!clean) return randomDictionaryWords();
+  if (wordCache.has(clean)) return wordCache.get(clean);
+  const words = await topicDictionaryWords(clean);
+  wordCache.set(clean, words);
+  return words;
+}
+
+function pickRandomStudent(course) {
+  const students = course ? sortedStudents(course) : [];
+  if (!students.length) {
+    showToast("Add students before picking one.");
+    return;
+  }
+  let pool = students.filter((student) => !tools.pickedIds.includes(student.id));
+  if (!pool.length) {
+    tools.pickedIds = [];
+    pool = students;
+  }
+  const chosen = pool[Math.floor(Math.random() * pool.length)];
+  runToolSpin("student-spin", pool.map((student) => studentName(student)), studentName(chosen), () => {
+    tools.lastStudent = studentName(chosen);
+    if (!tools.pickedIds.includes(chosen.id)) tools.pickedIds.push(chosen.id);
+    render();
+  });
+}
+
+function makeGroups(course) {
+  const students = course ? sortedStudents(course) : [];
+  if (students.length < 2) {
+    showToast("Add at least two students.");
+    return;
+  }
+  const field = document.getElementById("group-count");
+  let count = Math.round(Number(field?.value ?? tools.groupCount));
+  if (!Number.isFinite(count)) count = 2;
+  count = Math.min(students.length, Math.max(2, count));
+  tools.groupCount = count;
+  const shuffled = shuffle(students);
+  const groups = Array.from({ length: count }, () => []);
+  shuffled.forEach((student, index) => groups[index % count].push(student.id));
+  tools.groups = groups;
+  tools.pickedGroup = -1;
+  render();
+}
+
+function pickRandomGroup() {
+  if (!tools.groups.length) {
+    showToast("Make groups first.");
+    return;
+  }
+  const labels = tools.groups.map((_, index) => `Group ${index + 1}`);
+  const chosen = Math.floor(Math.random() * labels.length);
+  runToolSpin("group-spin", labels, labels[chosen], () => {
+    tools.pickedGroup = chosen;
+    render();
+  });
+}
+
+function pickRandomNumber() {
+  const minField = document.getElementById("number-min");
+  const maxField = document.getElementById("number-max");
+  let min = Math.round(Number(minField?.value ?? tools.numberMin));
+  let max = Math.round(Number(maxField?.value ?? tools.numberMax));
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    showToast("Enter a lowest and highest number.");
+    return;
+  }
+  if (min > max) [min, max] = [max, min];
+  if (max - min > 100000) {
+    showToast("Choose a smaller range.");
+    return;
+  }
+  tools.numberMin = min;
+  tools.numberMax = max;
+  const choice = min + Math.floor(Math.random() * (max - min + 1));
+  const labels = Array.from({ length: 12 }, () => String(min + Math.floor(Math.random() * (max - min + 1))));
+  runToolSpin("number-spin", labels, String(choice), () => {
+    tools.number = choice;
+    render();
+  });
+}
+
+async function pickRandomWord() {
+  const field = document.getElementById("word-topic");
+  const topic = field ? field.value : tools.wordTopic;
+  tools.wordTopic = topic;
+  const ticket = ++wordRequest;
+  stopToolSpin();
+  const node = document.getElementById("word-spin");
+  node?.closest(".tool-stage")?.classList.remove("is-landed");
+  if (node) node.textContent = "Looking up words...";
+  let words;
+  try {
+    words = await dictionaryWords(topic);
+  } catch (error) {
+    if (ticket !== wordRequest || !document.getElementById("word-spin")) return;
+    document.getElementById("word-spin").textContent = tools.word || "Pick a word";
+    showToast(error.message === "empty" ? "No dictionary words found for that topic." : "Could not reach the dictionary. Check the connection and try again.");
+    return;
+  }
+  if (ticket !== wordRequest || !document.getElementById("word-spin")) return;
+  const choice = words[Math.floor(Math.random() * words.length)];
+  runToolSpin("word-spin", words, choice, () => {
+    tools.word = choice;
+    render();
+  });
 }
 
 function renderHome() {
@@ -1065,7 +1475,7 @@ function courseCodeFields(selected) {
   const list = options
     .map((item) => `<option value="${esc(item.code)}" ${item.code === selected ? "selected" : ""}>${esc(item.code)} — ${esc(item.title)}</option>`)
     .join("");
-  return `<label class="field span-2">Search For Courses<input id="code-search" type="search" value="${esc(ui.codeQuery)}" placeholder="Enter Course Code or Keyword" autocomplete="off" /></label>
+  return `<label class="field span-2">Search For Courses<input id="code-search" type="search" value="${esc(ui.codeQuery)}" placeholder="Enter course code, or single keyword." autocomplete="off" /></label>
     <label class="field span-2">Select A Course Curriculum<select id="course-code" name="code"><option value="">Choose A Course</option>${list}</select></label>`;
 }
 
@@ -1106,7 +1516,6 @@ function renderNewCourse() {
     <label class="field">Grade<select name="grade">${gradeOptions(catalogue?.grade ?? 10)}</select></label>
     <label class="field">Semester<input name="semester" type="text" value="Semester 1, 2026–27" /></label>
     ${periodField("")}
-    <label class="field span-2">Students, One Per Line<textarea name="students" placeholder="Add your Students (or do this later...)"></textarea></label>
     <div class="span-2 form-actions"><a class="ghost" href="${esc(newClassCancelHref())}">Cancel</a><button class="primary" type="submit">Create Class</button></div>
   </form>`;
 }
@@ -1256,7 +1665,7 @@ function entryCard(course, entry) {
     ${photoSrc(entry.photo) ? `<img class="entry-photo" alt="Photo For This Entry" src="${entry.photo}" />` : ""}
     ${audioSrc(entry.audio) ? `<audio class="entry-audio" controls src="${esc(entry.audio)}"></audio>` : ""}
     <div class="row noprint">
-      <a class="ghost" style="text-decoration:none" href="${captureHref(course.id, entry.studentId, entry.id)}">Edit</a>
+      <a class="ghost" style="text-decoration:none" href="${captureHref(course.id, entry.studentId, entry.id, "student")}">Edit</a>
       <button type="button" class="text-button" data-action="delete-entry" data-entry="${esc(entry.id)}">Delete</button>
     </div>
   </article>`;
@@ -1272,7 +1681,9 @@ function ensureCapture(course, route) {
       return;
     }
     const behaviourEntry = isBehaviourEntry(entry);
-    const stillThere = behaviourEntry ? Boolean(knownBehaviour(course, entry.expectationId)) : Boolean(knownExpectation(course, entry.expectationId));
+    const foundExpectation = behaviourEntry ? null : knownExpectation(course, entry.expectationId);
+    const stillThere = behaviourEntry ? Boolean(knownBehaviour(course, entry.expectationId)) : Boolean(foundExpectation);
+    const userWritten = isUserExpectation(foundExpectation);
     ui.capture = {
       key,
       date: entry.date,
@@ -1281,7 +1692,7 @@ function ensureCapture(course, route) {
       kind: entry.kind,
       record: behaviourEntry ? "behaviour" : "assessment",
       expectationId: behaviourEntry ? (stillThere ? entry.expectationId : null) : (stillThere ? entry.expectationId : "custom"),
-      customText: behaviourEntry || stillThere ? "" : entry.expectationLabel,
+      customText: userWritten ? (foundExpectation.detail || foundExpectation.label || entry.expectationLabel) : (behaviourEntry || stillThere ? "" : entry.expectationLabel),
       saveCustom: false,
       level: entry.level,
       percent: entry.percent,
@@ -1331,6 +1742,11 @@ function renderCapture(course, student) {
   const ready = capture.touched && expectationOk;
   const saveLabel = ready ? "Save Entry" : expectationOk ? "Choose Level To Save Entry" : "No Expectation Selected";
   const expectationOptions = expectationMenu(course, behaviourEntry ? "" : capture.expectationId);
+  const userWritten = isUserExpectation(selected);
+  const chosenLevel = capture.touched ? levelById(capture.level) : null;
+  const entryPercent = chosenLevel
+    ? Math.min(chosenLevel.max, Math.max(chosenLevel.min, Math.round(Number(capture.percent))))
+    : Math.round(Number(capture.percent) || 0);
   const levelButtons = LEVELS.filter((item) => item.id !== "0")
     .map((item) => `<button type="button" class="level-btn" data-action="pick-level" data-level="${item.id}" aria-pressed="${capture.touched && capture.level === item.id}"><b>${item.short}</b><small>${item.band}</small></button>`)
     .join("");
@@ -1353,9 +1769,11 @@ function renderCapture(course, student) {
       </label>
       ${!behaviourEntry && capture.expectationId === "custom"
         ? customExpectationFields({ text: capture.customText, saveCustom: capture.saveCustom, textId: "custom-expectation", checkId: "save-custom" })
-        : selected
-          ? `<p class="chosen">${esc(expectationDescription(selected.detail) || selected.label)}</p>`
-          : ""}
+        : userWritten
+          ? `<label class="field">Custom Expectation<textarea id="custom-expectation" maxlength="400">${esc(capture.customText || selected.detail || selected.label)}</textarea></label>`
+          : selected
+            ? `<p class="chosen">${esc(expectationDescription(selected.detail) || selected.label)}</p>`
+            : ""}
       <label class="field">Behaviour Expectation
         <select id="behaviour-select" aria-label="Behaviour Expectation">
           <option value="">Choose A Behaviour Expectation</option>
@@ -1376,6 +1794,8 @@ function renderCapture(course, student) {
     <section class="dock ${capture.touched ? "is-set" : ""}">
       <div class="level-row">${levelButtons}</div>
       <button type="button" class="chip-btn below-btn" data-action="pick-level" data-level="0" aria-pressed="${capture.touched && capture.level === "0"}">Below Level 1 · Under 50%</button>
+      <label class="field">Percentage<input id="entry-percent" type="range" min="${chosenLevel ? chosenLevel.min : 0}" max="${chosenLevel ? chosenLevel.max : 100}" step="1" value="${entryPercent}" ${capture.touched ? "" : "disabled"} aria-label="Percentage" /></label>
+      <p class="readout" id="entry-percent-readout">${capture.touched ? `${entryPercent}%` : "Choose a level"}</p>
       <a class="ghost full-button cancel-entry" href="${backHref}">Cancel</a>
       <button id="save-entry" class="save-bar save" type="submit" ${ready ? "" : "disabled"}>${esc(saveLabel)}</button>
     </section>
@@ -1471,7 +1891,7 @@ function studentReportPage(course, student) {
     <h1>${esc(studentName(student))}</h1>
     <p class="report-meta">${esc(classReportLine(course))}</p>
     <h2>Levels</h2>
-    <div class="tally">${bars}</div>
+    <div class="tally">${bars}${behaviourSignalMark(summary.behaviour)}</div>
     <p>${average == null ? "No assessment levels recorded yet." : `Average level ${esc(levelSummaryText(average))} from ${countLabel}.`}${behaviourNote} ${summary.counts.conversation} conversations and ${summary.counts.observation} observations.</p>
     ${reportPerformance(summary.assessment, {
       title: "Assessment Expectations",
@@ -1481,7 +1901,7 @@ function studentReportPage(course, student) {
     ${reportPerformance(summary.behaviour, {
       title: "Behaviour Expectations",
       empty: "No behaviour entries yet.",
-      caption: "The line joins each recorded behaviour entry, oldest on the left. Behaviour entries are not included in the average or the level counts.",
+      caption: "The line joins each recorded behaviour entry, oldest on the left. The traffic signal shows the average behaviour level: green is Level 3 or 4, yellow is Level 2, and red is Level 1 or below. Behaviour entries are not included in the average or the level counts.",
     })}
     ${notes ? `<h2>Notes</h2><p class="report-notes">${esc(notes)}</p>` : ""}
     <h2>Entries</h2>
@@ -1558,7 +1978,7 @@ function renderRoster(course) {
           <strong>${esc(studentName(student))}</strong>
           ${trendLine(summary.assessment)}
           <div class="summary-side">
-            <div class="tally" aria-label="Assessment Entries By Level">${bars}</div>
+            <div class="tally" aria-label="Assessment entries by level, behaviour count, and behaviour signal">${bars}<span class="behaviour-count" title="Behaviour recordings">B ${summary.behaviour.length}</span>${behaviourSignalMark(summary.behaviour)}</div>
             <p class="sub">${summary.counts.conversation} conversations · ${summary.counts.observation} observations${summary.behaviour.length ? ` · ${summary.behaviour.length} behaviour ${summary.behaviour.length === 1 ? "entry" : "entries"}` : ""}</p>
           </div>
         </a>
@@ -1572,7 +1992,7 @@ function renderRoster(course) {
     <button type="button" class="primary full-button noprint" data-action="export-class-pdf">Export All Student Reports</button>
     <label class="field noprint"><input id="roster-search" type="search" value="${esc(ui.search)}" placeholder="Find A Student" aria-label="Find A Student" /></label>
     <div class="summary-list">${rows || "<p>No students match.</p>"}</div>
-    <p class="sub">The numbers count assessment entries at each level, from Level 4 to below Level 1. The line is each recorded assessment percent, oldest to newest. Behaviour entries are listed on the student summary and are not included in these counts. Neither one is a calculated mark.</p>
+    <p class="sub">The coloured numbers count assessment entries at each level, from Level 4 to below Level 1. The B number counts behaviour recordings. The traffic signal shows the average behaviour level: green is Level 3 or 4, yellow is Level 2, and red is Level 1 or below. The line is each recorded assessment percent, oldest to newest. Behaviour recordings are not included in the level counts or the line. Neither one is a calculated mark.</p>
     <button type="button" class="danger full-button noprint" data-action="clear-class-entries">Erase All Entries</button>
   </div>`;
 }
@@ -1686,6 +2106,21 @@ function averageLevel(entries) {
   return Math.round((values.reduce((sum, value) => sum + value, 0) / values.length) * 10) / 10;
 }
 
+function behaviourSignal(entries) {
+  const average = averageLevel(entries);
+  if (average == null) return { tone: "", label: "No behaviour level yet" };
+  const rounded = Math.round(average);
+  const tone = rounded >= 3 ? "green" : rounded === 2 ? "yellow" : "red";
+  const name = tone === "green" ? "Green" : tone === "yellow" ? "Yellow" : "Red";
+  return { tone, label: `Behaviour signal ${name}. Average behaviour level ${average.toFixed(1)}` };
+}
+
+function behaviourSignalMark(entries) {
+  const signal = behaviourSignal(entries);
+  const lamps = ["red", "yellow", "green"].map((tone) => `<i class="lamp lamp-${tone}${signal.tone === tone ? " is-on" : ""}"></i>`).join("");
+  return `<span class="signal" role="img" aria-label="${esc(signal.label)}" title="${esc(signal.label)}">${lamps}</span>`;
+}
+
 function storedLevelValue(mark) {
   const direct = Number(mark?.levelValue);
   if (Number.isFinite(direct)) return Math.round(Math.min(4, Math.max(0, direct)) * 10) / 10;
@@ -1764,8 +2199,8 @@ function renderStudent(course, student) {
       <h2 class="student-name">${esc(studentName(student))}</h2>
     </div>
     <section class="card">
-      <div class="tally student-tally">${LEVELS.map((level) => `<span class="lv-${level.id}">${level.short} · ${summary.byLevel[level.id]}</span>`).join("")}</div>
-      <p>${summary.counts.conversation} conversations and ${summary.counts.observation} observations. These counts include assessment entries only.</p>
+      <div class="tally student-tally">${LEVELS.map((level) => `<span class="lv-${level.id}">${level.short} · ${summary.byLevel[level.id]}</span>`).join("")}<span class="behaviour-count">Behaviour · ${summary.behaviour.length}</span>${behaviourSignalMark(summary.behaviour)}</div>
+      <p>${summary.counts.conversation} conversations and ${summary.counts.observation} observations. These counts include assessment entries only. The behaviour tally counts behaviour recordings. The traffic signal shows the average behaviour level: green is Level 3 or 4, yellow is Level 2, and red is Level 1 or below.</p>
       ${groups ? `<ul>${groups}</ul>` : `<p class="sub">No assessment entries yet.</p>`}
     </section>
     <section class="card">
@@ -1812,6 +2247,10 @@ function renderStudent(course, student) {
   </div>`;
 }
 
+function syncIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 4V1L7 6l5 5V7a5 5 0 0 1 4.9 6h2.02A7 7 0 0 0 12 4zm0 16v3l5-5-5-5v3a5 5 0 0 1-4.9-6H5.08A7 7 0 0 0 12 20z"/></svg>`;
+}
+
 function driveIcon() {
   return `<svg viewBox="0 0 87.3 78" aria-hidden="true"><path fill="#0066da" d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z"/><path fill="#00ac47" d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0-1.2 4.5h27.5z"/><path fill="#ea4335" d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z"/><path fill="#00832d" d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z"/><path fill="#2684fc" d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z"/><path fill="#ffba00" d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z"/></svg>`;
 }
@@ -1819,6 +2258,24 @@ function driveIcon() {
 function setupFold(id, title, body, extra = "stack") {
   const open = ui.setupOpen[id] ? " open" : "";
   return `<details class="card ${extra} setup-fold" data-fold="${esc(id)}"${open}><summary>${title}</summary>${body}</details>`;
+}
+
+function googlePanel() {
+  return setupFold("google", `<span class="google-setup-title">${driveIcon()} GOOGLE DRIVE SETUP</span>`, `<label class="field">Active Google Account<input id="google-account-email" type="text" readonly value="${esc(googleEmail(googleAccountEmail()))}" placeholder="Log in to Google Account Below" /></label>
+      <button type="button" class="primary drive-mark" data-action="google-sign-in">${driveIcon()} <span id="google-sign-in-label">${googleAccountReady() ? "Connected" : "Sign In"}</span></button>
+      <button type="button" class="primary" data-action="select-drive-folder">Select Drive Folder</button>
+      <label class="field">Google Folder<input id="google-folder-name" type="text" readonly value="${esc(storedFolder()?.name || "")}" placeholder="No Folder Chosen" /></label>
+      <div id="drive-browser"></div>
+      <button type="button" class="ghost drive-sync save" data-action="drive-pull">${driveIcon()} Sync Classes with Google Drive</button>
+      <p class="sub sync-time">${esc(lastSyncText())}</p>`).replace("<details ", "<details id=\"google-panel\" ");
+}
+
+function backupPanel() {
+  return `<section class="card stack" id="backup-panel">
+      <h2>OFFLINE BACKUP / RESTORE</h2>
+      <button type="button" class="ghost full-button csv-action" data-action="import">Import Class from CSV File</button>
+      <button type="button" class="ghost full-button csv-action" data-action="email-backup">Backup Class to CSV File</button>
+    </section>`;
 }
 
 function renderSetup(course) {
@@ -1856,26 +2313,11 @@ function renderSetup(course) {
     ${expectationFold}
     ${behaviourFold}
     <section class="card stack">
-      <a class="primary setup-add noprint" href="#/new">Create a New Class</a>
       <button type="button" class="danger full-button" data-action="delete-course">Delete ${esc(course.code || course.name)}</button>
+      <a class="primary setup-add noprint" href="#/new">Create a New Class</a>
     </section>
-    <section class="card stack" id="google-panel">
-      <h2 class="google-setup-title">${driveIcon()} GOOGLE DRIVE SETUP</h2>
-      <label class="field">Active Google Account<input id="google-account-email" type="text" readonly value="${esc(googleEmail(sessionStorage.getItem("class-record-google-account")))}" placeholder="Log in to Google Account Below" /></label>
-      <label class="field">Google Folder<input id="google-folder-name" type="text" readonly value="${esc(storedFolder()?.name || "")}" placeholder="No Folder Chosen" /></label>
-      <div class="row">
-        <button type="button" class="ghost drive-mark" data-action="google-sign-in">${driveIcon()} <span id="google-sign-in-label">${googleAccountReady() ? "Connected" : "Sign In"}</span></button>
-        <button type="button" class="primary" data-action="select-drive-folder">Select Drive Folder</button>
-      </div>
-      <div id="drive-browser"></div>
-      <button type="button" class="ghost drive-sync save" data-action="drive-pull">${driveIcon()} Sync Classes with Google Drive</button>
-      <p class="sub sync-time">${esc(lastSyncText())}</p>
-    </section>
-    <section class="card stack" id="backup-panel">
-      <h2>BACKUP / RESTORE CLASS DATA</h2>
-      <button type="button" class="ghost full-button csv-action" data-action="import">Import Class from CSV File</button>
-      <button type="button" class="ghost full-button csv-action" data-action="email-backup">Backup Class to CSV File</button>
-    </section>
+    ${googlePanel()}
+    ${backupPanel()}
   </div>`;
 }
 
@@ -1886,7 +2328,7 @@ function saveCapture(course) {
     return;
   }
   const customField = document.getElementById("custom-expectation");
-  if (customField && capture.expectationId === "custom") capture.customText = customField.value;
+  if (customField) capture.customText = customField.value;
   if (!expectationReady(course, capture)) {
     showToast("Choose an expectation, or write a custom one.");
     render();
@@ -1920,7 +2362,16 @@ function saveCapture(course) {
     draft.saveCustom = true;
   } else {
     const found = knownExpectation(course, capture.expectationId);
-    expectationLabel = found?.label || "Expectation";
+    if (isUserExpectation(found)) {
+      const text = capture.customText.trim();
+      found.detail = text;
+      found.label = buttonLabel(text);
+      expectationId = found.id;
+      expectationLabel = text;
+      for (const entry of course.entries) {
+        if (entry.expectationId === found.id && entry.id !== capture.entryId) entry.expectationLabel = text;
+      }
+    } else expectationLabel = found?.label || "Expectation";
   }
   const date = capture.date || ui.date;
   const session = ensureSession(course, date);
@@ -1958,8 +2409,12 @@ function saveCapture(course) {
   persist();
   showToast(`${behaviourEntry ? "Behaviour" : kindById(payload.kind).label} saved · ${levelById(payload.level).name}`);
   warnIfGoogleMissing();
-  const backToStudent = !capture.entryId && parseRoute().returnTo === "student";
+  const backToStudent = parseRoute().returnTo === "student";
   if (!capture.entryId && !backToStudent) scrollTilesToTop = true;
+  if (capture.entryId && backToStudent) {
+    ui.entriesOpen[capture.studentId] = true;
+    scrollStudentEntries = capture.studentId;
+  }
   const next = backToStudent ? studentHref(course.id, capture.studentId) : hrefFor(course.id);
   if ((location.hash || "#/") !== next) location.hash = next;
   else render();
@@ -2105,7 +2560,7 @@ function chooseBackupMode() {
 }
 
 function askEmail() {
-  const preset = googleEmail(sessionStorage.getItem("class-record-google-account")) || db.backupEmail || "";
+  const preset = googleEmail(googleAccountEmail()) || db.backupEmail || "";
   modalEl.innerHTML = `<form method="dialog"><h2>Email The CSV</h2><p>Each class is its own file, named with the course code, the semester and year, and the period. The files download, then your mail app opens. Attach the CSVs to the message.</p><label class="field">Email Address<input id="backup-email" type="email" required value="${esc(preset)}" placeholder="name@school.ca" /></label><menu><button class="ghost" value="cancel" type="submit">Cancel</button><button class="primary" value="ok" type="submit">Email CSV</button></menu></form>`;
   const input = modalEl.querySelector("#backup-email");
   modalEl.showModal();
@@ -2181,7 +2636,7 @@ function refreshGoogleFields() {
   const email = document.getElementById("google-account-email");
   const folder = document.getElementById("google-folder-name");
   const signIn = document.getElementById("google-sign-in-label");
-  if (email) email.value = googleEmail(sessionStorage.getItem("class-record-google-account")) || "";
+  if (email) email.value = googleEmail(googleAccountEmail()) || "";
   if (folder) folder.value = storedFolder()?.name || "";
   if (signIn) signIn.textContent = googleAccountReady() ? "Connected" : "Sign In";
 }
@@ -2406,6 +2861,46 @@ async function onClick(event) {
     return;
   }
   if (action === "export-class-pdf" && course) return exportReports(course, sortedStudents(course));
+  if (action === "pick-student") return pickRandomStudent(course);
+  if (action === "reset-student-picks") {
+    tools.pickedIds = [];
+    tools.lastStudent = "";
+    render();
+    return;
+  }
+  if (action === "make-groups") return makeGroups(course);
+  if (action === "pick-group") return pickRandomGroup();
+  if (action === "set-timer") return setTimerDuration(Number(target.dataset.seconds));
+  if (action === "set-custom-timer") {
+    const minutes = Math.min(180, Math.max(0, Math.round(Number(document.getElementById("timer-minutes")?.value || 0))));
+    const seconds = Math.min(59, Math.max(0, Math.round(Number(document.getElementById("timer-seconds")?.value || 0))));
+    if (minutes * 60 + seconds <= 0) {
+      showToast("Set a time above zero.");
+      return;
+    }
+    return setTimerDuration(minutes * 60 + seconds);
+  }
+  if (action === "toggle-timer") {
+    if (tools.timerRunning) {
+      stopTimer();
+      tools.timerDone = false;
+      render();
+      return;
+    }
+    const left = tools.timerLeft;
+    if (left <= 0) {
+      showToast("Set a time above zero.");
+      return;
+    }
+    tools.timerDone = false;
+    tools.timerEndsAt = Date.now() + left * 1000;
+    tools.timerRunning = true;
+    render();
+    return;
+  }
+  if (action === "reset-timer") return setTimerDuration(tools.timerSet);
+  if (action === "pick-number") return pickRandomNumber();
+  if (action === "pick-word") return pickRandomWord();
   if (action === "grip") return;
   if (action === "toggle-student-view") {
     ui.studentView = ui.studentView === "list" ? "tiles" : "list";
@@ -2618,7 +3113,7 @@ async function onClick(event) {
   if (action === "delete-entry") {
     const ok = await confirmAction("Delete this entry?");
     if (!ok) return;
-    course.entries = course.entries.filter((entry) => entry.id !== target.dataset.entry);
+    forgetEntries(course, course.entries.filter((entry) => entry.id === target.dataset.entry));
     persist();
     showToast("Entry deleted.");
     render();
@@ -2634,7 +3129,7 @@ async function onClick(event) {
     }
     const ok = await confirmAction(`Clear all ${count} ${count === 1 ? "entry" : "entries"} for ${name}? The student stays.`, "Clear All Entries");
     if (!ok) return;
-    course.entries = course.entries.filter((entry) => entry.studentId !== target.dataset.student);
+    forgetEntries(course, course.entries.filter((entry) => entry.studentId === target.dataset.student));
     persist();
     showToast("Entries cleared.");
     render();
@@ -2649,7 +3144,7 @@ async function onClick(event) {
     const label = course.code || course.name;
     const ok = await confirmAction(`Erase all ${count} ${count === 1 ? "entry" : "entries"} in ${label}? Students stay.`, "Erase All Entries");
     if (!ok) return;
-    course.entries = [];
+    forgetEntries(course, course.entries);
     persist();
     showToast("Class entries erased.");
     render();
@@ -2662,7 +3157,7 @@ async function onClick(event) {
     db.lastCourseId = db.courses[0]?.id || null;
     db.ready = true;
     persist();
-    location.hash = db.lastCourseId ? hrefFor(db.lastCourseId, keptTab) : "#/new";
+    location.hash = db.lastCourseId ? hrefFor(db.lastCourseId, keptTab) : "#/setup";
     showToast(course.sample ? "Sample class deleted." : "Course deleted.");
     return;
   }
@@ -2672,7 +3167,7 @@ async function onClick(event) {
     if (!ok) return;
     const studentId = target.dataset.student;
     course.students = course.students.filter((item) => item.id !== studentId);
-    course.entries = course.entries.filter((item) => item.studentId !== studentId);
+    forgetEntries(course, course.entries.filter((item) => item.studentId === studentId));
     delete course.marks[studentId];
     persist();
     showToast("Student removed.");
@@ -2770,11 +3265,6 @@ function onSubmit(event) {
   if (action === "create-course") {
     const code = String(data.get("code") || "").trim().toUpperCase();
     const catalogue = findOntarioCourse(code);
-    const students = String(data.get("students") || "")
-      .split("\n")
-      .map(parseStudentLine)
-      .filter(Boolean)
-      .map((student, index) => ({ id: uid("stu"), preferredName: "", seat: index, ...student }));
     const created = normalizeCourse({
       id: uid("course"),
       name: String(data.get("name") || catalogue?.title || ""),
@@ -2783,7 +3273,7 @@ function onSubmit(event) {
       gradeLabel: catalogue?.gradeLabel || "",
       semesterLabel: String(data.get("semester") || ""),
       period: periodValue(data.get("period")),
-      students,
+      students: [],
       expectations: [],
       expectationsManaged: true,
       behaviourExpectations: [],
@@ -2972,7 +3462,7 @@ async function syncStudentList(course, text, options = {}) {
       return null;
     }
     const removedIds = new Set(removed.map((student) => student.id));
-    course.entries = course.entries.filter((entry) => !removedIds.has(entry.studentId));
+    forgetEntries(course, course.entries.filter((entry) => removedIds.has(entry.studentId)));
     for (const id of removedIds) delete course.marks[id];
   }
   course.students = assigned.filter(Boolean);
@@ -3029,6 +3519,8 @@ function onChange(event) {
     if (target.value) {
       ui.capture.record = "assessment";
       ui.capture.expectationId = target.value;
+      const found = knownExpectation(course, target.value);
+      if (isUserExpectation(found)) ui.capture.customText = found.detail || found.label;
     } else if (ui.capture.record !== "behaviour") ui.capture.expectationId = null;
     render();
     return;
@@ -3199,6 +3691,22 @@ function onStudentPaste(event) {
 
 function onInput(event) {
   const target = event.target;
+  if (target.id === "group-count") {
+    const count = Math.round(Number(target.value));
+    if (Number.isFinite(count)) tools.groupCount = count;
+    return;
+  }
+  if (target.id === "number-min" || target.id === "number-max") {
+    const value = Math.round(Number(target.value));
+    if (!Number.isFinite(value)) return;
+    if (target.id === "number-min") tools.numberMin = value;
+    else tools.numberMax = value;
+    return;
+  }
+  if (target.id === "word-topic") {
+    tools.wordTopic = target.value;
+    return;
+  }
   if (target.id === "checkpoint-custom") {
     const studentId = document.getElementById("checkpoint-name")?.dataset.student;
     if (studentId) checkpointDraft(studentId).custom = target.value;
@@ -3215,7 +3723,16 @@ function onInput(event) {
     return;
   }
   if (target.id === "code-search") {
-    ui.codeQuery = target.value;
+    const raw = target.value;
+    const cleaned = raw.replace(/\s+/g, "");
+    if (cleaned !== raw) {
+      const at = target.selectionStart ?? cleaned.length;
+      const removedBefore = raw.slice(0, at).length - raw.slice(0, at).replace(/\s+/g, "").length;
+      target.value = cleaned;
+      const next = Math.max(0, at - removedBefore);
+      target.setSelectionRange(next, next);
+    }
+    ui.codeQuery = cleaned;
     const select = document.getElementById("course-code");
     if (!select) return;
     const selected = select.value;
@@ -3248,6 +3765,15 @@ function onInput(event) {
     return;
   }
   if (!ui.capture) return;
+  if (target.id === "entry-percent" && ui.capture) {
+    const level = levelById(ui.capture.level);
+    let value = Math.round(Number(target.value));
+    if (level) value = Math.min(level.max, Math.max(level.min, value));
+    ui.capture.percent = value;
+    const readout = document.getElementById("entry-percent-readout");
+    if (readout) readout.textContent = `${value}%`;
+    return;
+  }
   if (target.id === "entry-note") ui.capture.note = target.value;
   if (target.id === "custom-expectation") {
     ui.capture.customText = target.value;
@@ -3311,57 +3837,142 @@ function onPointerDown(event) {
   drag = { id: tile.dataset.student, pointerId: event.pointerId, moved: false, x: event.clientX, y: event.clientY };
 }
 
+function onSeatDragScroll() {
+  if (!drag?.moved) return;
+  scrollStudentListToTop();
+}
+
+function placeDraggedTile(event) {
+  const tile = drag?.tile;
+  const floor = drag?.floor;
+  if (!tile || !floor) return;
+  const floorRect = floor.getBoundingClientRect();
+  const scale = floor.offsetWidth ? floorRect.width / floor.offsetWidth : 1;
+  tile.style.left = `${(event.clientX - floorRect.left) / scale - drag.offsetX}px`;
+  tile.style.top = `${(event.clientY - floorRect.top) / scale - drag.offsetY}px`;
+}
+
+function swapNodes(a, b) {
+  if (!a || !b || a === b || a.parentElement !== b.parentElement) return;
+  const parent = a.parentElement;
+  const aNext = a.nextSibling;
+  const bNext = b.nextSibling;
+  if (aNext === b) parent.insertBefore(b, a);
+  else if (bNext === a) parent.insertBefore(a, b);
+  else {
+    parent.insertBefore(a, bNext);
+    parent.insertBefore(b, aNext);
+  }
+}
+
+function moveDragPlaceholder(event) {
+  const placeholder = drag?.placeholder;
+  const floor = drag?.floor;
+  if (!placeholder || !floor || !drag.restOrder) return;
+  for (const node of drag.restOrder) floor.appendChild(node);
+  const under = document.elementFromPoint(event.clientX, event.clientY)?.closest(".floor .tile");
+  if (!under || under === placeholder || under === drag.tile || under.parentElement !== floor) return;
+  swapNodes(placeholder, under);
+}
+
+function liftDragTile(event) {
+  const tile = appEl.querySelector(`.floor .tile[data-student="${CSS.escape(drag.id)}"]`);
+  const floor = tile?.parentElement;
+  if (!tile || !floor) return;
+  const rect = tile.getBoundingClientRect();
+  const floorRect = floor.getBoundingClientRect();
+  const scale = floor.offsetWidth ? floorRect.width / floor.offsetWidth : 1;
+  drag.tile = tile;
+  drag.floor = floor;
+  drag.offsetX = (event.clientX - rect.left) / scale;
+  drag.offsetY = (event.clientY - rect.top) / scale;
+  const placeholder = document.createElement("div");
+  placeholder.className = "tile is-placeholder";
+  placeholder.setAttribute("aria-hidden", "true");
+  tile.before(placeholder);
+  drag.placeholder = placeholder;
+  drag.restOrder = [...floor.children].filter((node) => node !== tile);
+  tile.classList.add("is-dragging");
+  try {
+    tile.setPointerCapture(event.pointerId);
+  } catch {
+    /* The pointer is already active for a real drag. */
+  }
+  window.addEventListener("scroll", onSeatDragScroll, true);
+  scrollStudentListToTop();
+  placeDraggedTile(event);
+}
+
+function finishDrag() {
+  window.removeEventListener("scroll", onSeatDragScroll, true);
+  const tile = drag.tile;
+  const placeholder = drag.placeholder;
+  if (tile && placeholder?.parentElement) placeholder.replaceWith(tile);
+  if (tile) {
+    tile.classList.remove("is-dragging");
+    tile.style.left = "";
+    tile.style.top = "";
+  }
+  const floor = appEl.querySelector(".floor");
+  const course = courseById(parseRoute().courseId);
+  if (course && floor) {
+    [...floor.children].forEach((item, index) => {
+      const id = item.dataset.student;
+      if (!id) return;
+      const student = studentById(course, id);
+      if (student) student.seat = index;
+    });
+    persist();
+  }
+  scrollStudentListToTop();
+}
+
 function onPointerMove(event) {
   if (!drag || event.pointerId !== drag.pointerId) return;
-  const tile = appEl.querySelector(`.floor .tile[data-student="${CSS.escape(drag.id)}"]`);
-  if (!tile) return;
   if (!drag.moved) {
     if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 8) return;
     drag.moved = true;
-    try {
-      tile.setPointerCapture(event.pointerId);
-    } catch {
-      /* The pointer is already active for a real drag. */
-    }
+    event.preventDefault();
+    liftDragTile(event);
+    return;
   }
-  tile.classList.add("is-dragging");
-  const previous = tile.style.pointerEvents;
-  tile.style.pointerEvents = "none";
-  const under = document.elementFromPoint(event.clientX, event.clientY)?.closest(".floor .tile");
-  tile.style.pointerEvents = previous;
-  if (!under || under === tile || under.parentElement !== tile.parentElement) return;
-  if ([...tile.parentElement.children].indexOf(tile) < [...tile.parentElement.children].indexOf(under)) under.after(tile);
-  else under.before(tile);
+  event.preventDefault();
+  scrollStudentListToTop();
+  placeDraggedTile(event);
+  moveDragPlaceholder(event);
 }
 
 function onPointerUp(event) {
   if (!drag || event.pointerId !== drag.pointerId) return;
   const moved = drag.moved;
+  if (moved) finishDrag();
   drag = null;
   if (!moved) return;
   ignoreClick = true;
   setTimeout(() => {
     ignoreClick = false;
   }, 0);
-  const route = parseRoute();
-  const course = courseById(route.courseId);
-  const floor = appEl.querySelector(".floor");
-  if (!course || !floor) return;
-  [...floor.children].forEach((item, index) => {
-    const id = item.dataset.student;
-    if (!id) return;
-    const student = studentById(course, id);
-    if (student) student.seat = index;
-  });
-  persist();
-  render();
 }
 
 function onSetupFold(event) {
   const fold = event.target;
   if (!(fold instanceof HTMLDetailsElement)) return;
+  if (fold.dataset.tool) {
+    if (!fold.open) {
+      if (tools.open === fold.dataset.tool) tools.open = "";
+      return;
+    }
+    tools.open = fold.dataset.tool;
+    stopToolSpin();
+    fold.parentElement?.querySelectorAll(".tool-fold").forEach((other) => {
+      if (other !== fold) other.open = false;
+    });
+    scrollOpenedPanel(fold);
+    return;
+  }
   if (fold.dataset.entries) {
     ui.entriesOpen[fold.dataset.entries] = fold.open;
+    if (fold.open) scrollOpenedPanel(fold);
     return;
   }
   if (!fold.dataset.fold) return;
@@ -3373,6 +3984,7 @@ function onSetupFold(event) {
   fold.parentElement?.querySelectorAll(".setup-fold").forEach((other) => {
     if (other !== fold) other.open = false;
   });
+  scrollOpenedPanel(fold);
 }
 
 function onFocusOut(event) {
@@ -3405,13 +4017,18 @@ function start() {
   appEl.addEventListener("pointerup", onPointerUp);
   appEl.addEventListener("pointercancel", onPointerUp);
   importEl.addEventListener("change", onImport);
+  window.addEventListener("google-access-ready", () => refreshGoogleFields());
+  window.addEventListener("google-access-ended", () => {
+    restoreGoogleSession().finally(() => refreshGoogleFields());
+  });
   window.addEventListener("hashchange", () => render());
   window.addEventListener("resize", () => requestAnimationFrame(fitSeatTiles));
   const hash = location.hash || "";
   const bare = !hash || hash === "#" || hash === "#/";
   const course = courseById(db.lastCourseId) || db.courses[0];
   if (!course) {
-    if (location.hash !== "#/new") location.hash = "#/new";
+    const path = (location.hash || "#/").replace(/\?.*$/, "");
+    if (!["#/setup", "#/class", "#/roster", "#/tools", "#/new", "#/new/"].includes(path)) location.hash = "#/setup";
     else render();
   } else if (bare || (firstLaunch && (hash === "#/new" || hash === "#/new/"))) {
     location.hash = hrefFor(course.id, firstLaunch ? "setup" : "class");
@@ -3423,8 +4040,9 @@ async function resumeGoogle() {
   const picked = takePickedFolder();
   if (picked?.folder) rememberFolder(picked.folder);
   const result = await takeGoogleResult();
-  if (result?.email) sessionStorage.setItem("class-record-google-account", googleEmail(result.email) || result.email);
+  if (result?.email) rememberGoogleAccount(googleEmail(result.email) || result.email);
   if (result?.error) showToast(result.error);
+  if (!storedGoogleToken()) await restoreGoogleSession();
   refreshGoogleFields();
   const wantsPull = sessionStorage.getItem("class-record-google-pull") === "1" || sessionStorage.getItem("class-record-google-save") === "1";
   if (wantsPull) {
